@@ -261,7 +261,7 @@ if [ "$have_claude" = 1 ]; then
     "$BIN/claude-acc" share --auto >/dev/null && ok "skills and plugins added to a project are shared with every project and account"
   fi
   "$BIN/claude-acc" sync >/dev/null
-  names=$(cd "$HOME/.claude-accounts" 2>/dev/null && for d in */; do if [ -d "$d" ]; then printf '%s ' "${d%/}"; fi; done)
+  names=$(cd "$HOME/.claude-accounts" 2>/dev/null && for d in */; do d=${d%/}; if [[ $d =~ ^[a-z0-9][a-z0-9-]{0,19}$ ]]; then printf '%s ' "$d"; fi; done)
   if [ -n "$names" ]; then ok "accounts re-linked: $names"; else ok "no extra accounts yet"; fi
 fi
 
