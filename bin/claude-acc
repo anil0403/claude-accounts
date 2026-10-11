@@ -1,31 +1,21 @@
 #!/bin/bash
-# claude-acc — several Claude subscriptions on one machine,
-# one shared history.
-#
-#   claude-acc add <name> [--email you@x.com] [--no-login]
-#                              create account <name> + launcher `claude-<name>`, then log it in
-#   claude-acc login <name>    (re)log an account in, e.g. after its login expired
-#   claude-acc list            every account: who it is logged in as, plan, last-seen usage
-#   claude-acc run <name> [args...]   start Claude on that account (same as `claude-<name> args...`)
-#   claude-acc sync            (re)link shared files and rewrite launchers for every account
-#   claude-acc share [--auto|--no-auto]
-#                              make skills/plugins added to one project available in every project
-#                              and account; --auto runs it at every session start
-#   claude-acc rm <name> [--yes]      log out and remove an account (shared history is untouched)
+# claude-acc: several Claude Code accounts on one Linux machine, one shared history.
+# Part of claude-accounts (https://github.com/anil0403/claude-accounts), MIT license.
 #
 # Plain `claude` stays the "main" account in ~/.claude. Each extra account gets its own
-# CLAUDE_CONFIG_DIR (~/.claude-accounts/<name>) holding only per-account state: its login,
-# .claude.json, Remote Control daemon/sessions, jobs. Everything in SHARED below is a symlink back
-# into ~/.claude, so `--resume`/`--continue`, history, settings, skills, plugins, memory and the
-# status line are the same whichever account you launch.
-#
-# The login lives in <config dir>/.credentials.json, so accounts never share a login.
+# CLAUDE_CONFIG_DIR (~/.claude-accounts/<name>) holding only per-account state: its login
+# (.credentials.json, so accounts never share one), .claude.json, Remote Control daemon/sessions,
+# jobs. Everything in SHARED_DIRS/SHARED_FILES is a symlink back into ~/.claude, so
+# `--resume`/`--continue`, history, settings, skills, plugins, memory and the status line are the
+# same whichever account you launch.
 set -euo pipefail
+
+VERSION=1.0.0
 
 MAIN="$HOME/.claude"
 ROOT="$HOME/.claude-accounts"
 BIN="$HOME/.local/bin"
-USAGE="$ROOT/.usage"   # <name>.json, written by shared/statusline.sh and the tray app
+USAGE="$ROOT/.usage"   # <name>.json, written by the status line and the tray
 
 # Allowlist: anything not named here stays per-account (safer for files Claude Code adds later).
 SHARED_DIRS=(
@@ -42,8 +32,36 @@ SEED_DROP='del(.oauthAccount, .userID, .cachedUsageUtilization, .cachedExtraUsag
   .additionalModelOptionsCache, .additionalModelCostsCache, .cachedGrowthBookFeatures,
   .cachedGrowthBookFeaturesAt, .cachedExperimentData, .cachedExperimentFeatures, .cachedArtifactRoster)'
 
+usage() {
+  cat <<'EOF'
+claude-acc: several Claude Code accounts on one machine, one shared history.
+
+  claude-acc add <name> [--email you@example.com] [--no-login]
+                             create account <name> and its command `claude-<name>`, then log it in
+  claude-acc login <name>    log an account in again, e.g. after its login expired
+  claude-acc list            every account: who it is logged in as, plan, last-seen usage
+  claude-acc run <name> [args...]
+                             start Claude on that account (same as `claude-<name> args...`)
+  claude-acc sync            re-link shared files and rewrite the commands for every account
+  claude-acc share [--auto|--no-auto]
+                             make skills/plugins added to one project available in every project
+                             and account; --auto runs it at every session start
+  claude-acc rm <name> [--yes]
+                             log out and remove an account (shared history is kept)
+  claude-acc version
+
+Plain `claude` is the account "main". History, sessions, settings, skills, plugins and memory are
+shared, so a session started on one account can be continued on another (`--resume`).
+EOF
+}
+
 die()  { echo "claude-acc: $*" >&2; exit 1; }
 warn() { echo "claude-acc: $*" >&2; }
+
+case ${1:-} in   # these work before Claude Code and jq are installed
+  -h|--help|help) usage; exit 0 ;;
+  version|--version|-V) echo "claude-acc $VERSION"; exit 0 ;;
+esac
 
 CLAUDE_BIN=${CLAUDE_ACC_CLAUDE:-$(command -v claude || true)}
 [ -n "$CLAUDE_BIN" ] || die "Claude Code ('claude') is not on PATH"
@@ -445,6 +463,5 @@ case ${1:-list} in
   sync)       cmd_sync ;;
   share)      shift; cmd_share "$@" ;;
   rm|remove)  shift; cmd_rm "$@" ;;
-  -h|--help|help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown command '$1' (try: add, login, list, run, sync, share, rm)" ;;
+  *) die "unknown command '$1' (try: claude-acc help)" ;;
 esac
