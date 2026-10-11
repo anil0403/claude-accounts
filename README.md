@@ -2,7 +2,7 @@
 
 Several Claude Code accounts on one Linux machine, working as one. Every account shares the same history, sessions, settings, plugins and skills: start a session on one account, and when it reaches its limit, continue it on another. A panel icon shows how much of each account's 5-hour and weekly limits is left.
 
-<p align="center"><img src="docs/dashboard.png" width="620" alt="The dashboard: three accounts with their 5-hour and weekly usage, today's activity, the account with the most room left, and the sessions running now"></p>
+<p align="center"><img src="docs/dashboard.png" width="620" alt="The dashboard: three accounts with their 5-hour and weekly usage, today's activity, the best account to switch to, and the sessions running now"></p>
 
 ## Install
 
@@ -40,10 +40,10 @@ Hit a limit mid-task? Quit and run `claude-<other> --continue` in the same folde
 
 The ring shows the 5-hour usage of the account you used last: green, then amber from 70% and red from 90%, grey when the numbers are old. Click it for the dashboard:
 
-- **Accounts:** the 5-hour and weekly bars for each one. The tick on a bar is where you would be if you spent evenly, so a bar past its tick runs out early.
-- **Today:** prompts, active time, lines written and the cost at API prices, across all accounts.
-- **Most room left:** the account to switch to, with a button that continues your last session on it.
-- **Running now:** open Claude Code sessions and the account each one uses.
+- **Accounts** (left): the 5-hour and weekly bars for each one. The tick on a bar is where you would be if you spent evenly, so a bar past its tick runs out early.
+- **Today's Activity:** prompts, active time, lines written and the cost at API prices, across all accounts.
+- **Best account now:** the one with the most room left. Click it to continue your last session on it.
+- **Running sessions:** open Claude Code sessions and the account each one uses.
 
 <img src="docs/dashboard-account.png" width="420" align="right" alt="An account's page: continue the last session, start one in a folder, recent projects and sessions with pins">
 
@@ -52,7 +52,7 @@ Click an account to:
 - resume any recent session with that account (pin the ones you use most)
 - log the account in again or remove it
 
-The gear opens the settings:
+Below them: add an account, refresh, open the usage page, and the settings:
 - what the panel text shows
 - usage alerts at 80% and 95%
 - hiding email addresses
