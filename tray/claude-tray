@@ -60,7 +60,10 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk
 
 Gdk.set_allowed_backends("x11,*")  # tray icons and window placement need X11 (XWayland on Wayland)
-from gi.repository import Gio, GLib, Gtk, Pango
+gi.require_version("GdkPixbuf", "2.0")
+gi.require_foreign("cairo")
+import cairo
+from gi.repository import GdkPixbuf, Gio, GLib, Gtk, Pango
 
 XApp = Indicator = GdkX11 = None
 try:
@@ -95,36 +98,40 @@ MODEL_TONES = {"Opus": "amber", "Sonnet": "blue", "Haiku": "green", "Fable": "pu
 
 CSS = """
 window.ct-window { background-color: transparent; }
-.ct-panel { background-color: @ct_bg; color: @ct_fg; border-radius: 14px; margin: 8px;
-            background-image: linear-gradient(to bottom, alpha(white, 0.06), alpha(white, 0) 35%);
-            border: 1px solid alpha(@ct_fg, 0.14); box-shadow: 0 4px 12px alpha(black, 0.35); }
-.ct-panel.ct-square { border-radius: 0; margin: 0; box-shadow: none; }
-.ct-panel label { font-size: 13.5pt; }
-.ct-head { padding: 12px 12px 8px 16px; }
-.ct-body { padding: 0 12px 12px 12px; }
-.ct-body.ct-top { padding-top: 12px; }
-/* cards: lighter, raised tiles on the panel */
-.ct-card { background-color: @ct_tile; border-radius: 12px; padding: 16px 18px;
-           background-image: linear-gradient(to bottom, alpha(white, 0.09), alpha(white, 0) 160px);
-           border: 1px solid @ct_edge; box-shadow: 0 6px 14px alpha(black, 0.2); }
-button.ct-card { text-shadow: none; }
-button.ct-card:hover, button.ct-card.ct-open { background-color: @ct_tile_hover; }
-button.ct-card.ct-open { border-color: alpha(@ct_fg, 0.35); }
-button.ct-row { padding: 6px 8px; border-radius: 8px; border: none; background-image: none; box-shadow: none; }
-button.ct-row:hover { background-color: alpha(@ct_fg, 0.08); }
-button.ct-tool { padding: 5px; border-radius: 8px; min-width: 0; min-height: 0; }
-.ct-panel .ct-title, .ct-panel .ct-app { font-weight: bold; font-size: 15.5pt; }
-.ct-panel .ct-small { font-size: 12.5pt; }
+.ct-root scrolledwindow, .ct-root viewport { background-color: transparent; background-image: none; border: none; }
+.ct-root scrolledwindow overshoot, .ct-root scrolledwindow undershoot { background: none; box-shadow: none; }
+.ct-root label { font-size: 13.5pt; }
+.ct-root .ct-title { font-weight: bold; font-size: 15.5pt; }
+.ct-root .ct-small { font-size: 12.5pt; }
 .ct-dim { opacity: 0.8; }
-.ct-panel .ct-caption { font-size: 11pt; font-weight: bold; opacity: 0.8; }
-.ct-panel .ct-pct { font-weight: bold; font-size: 14.5pt; }
-.ct-panel .ct-big { font-weight: bold; font-size: 23pt; }
-.ct-panel .ct-pill { border-radius: 99px; padding: 2px 10px; font-size: 11pt; font-weight: bold; }
-.ct-icon { border-radius: 7px; padding: 6px; background-color: alpha(@ct_fg, 0.14); }
-.ct-banner { border-radius: 10px; padding: 9px 12px; }
-.ct-code { font-family: monospace; border-radius: 6px; padding: 2px 8px; background-color: alpha(@ct_fg, 0.1); }
-.ct-pin { opacity: 0.35; }
-.ct-pin.ct-on { opacity: 1; }
+.ct-root .ct-caption { font-size: 11pt; font-weight: bold; opacity: 0.8; }
+.ct-root .ct-caption.ct-off { opacity: 0.4; }
+.ct-root .ct-pct { font-weight: bold; font-size: 14.5pt; }
+.ct-root .ct-big { font-weight: bold; font-size: 23pt; }
+.ct-root .ct-pill { border-radius: 99px; padding: 2px 10px; font-size: 11pt; font-weight: bold; }
+.ct-root .ct-pill.ct-plugin-on { background-color: alpha(black, 0.3); color: @ct_fg; }
+.ct-root .ct-pill.ct-plugin-off { background-color: alpha(@ct_fg, 0.22); color: @ct_fg; }
+.ct-root .ct-code { font-family: monospace; font-size: 11.5pt; border-radius: 6px; padding: 2px 8px;
+                    background-color: alpha(currentColor, 0.1); }
+.ct-icon { border-radius: 7px; padding: 6px; background-color: alpha(currentColor, 0.14); }
+.ct-pin { opacity: 0.3; }
+.ct-pin.ct-amber { opacity: 1; }
+.ct-trash { opacity: 0.75; }
+.ct-root .ct-banner { border-radius: 8px; padding: 8px 12px; margin: 4px 8px; }
+.ct-root { color: @ct_fg; }
+/* menu items: the theme's menu highlight under the pointer, and on the item whose menu is open */
+button.ct-item, checkbutton.ct-item, radiobutton.ct-item {
+  color: @ct_fg; background-color: transparent; background-image: none; border: none; box-shadow: none;
+  text-shadow: none; -gtk-icon-shadow: none; outline-width: 0; border-radius: 8px; margin: 0 4px;
+  padding: 0; min-height: 0; min-width: 0; }
+button.ct-item:hover, button.ct-item.ct-open, checkbutton.ct-item:hover, radiobutton.ct-item:hover {
+  background-color: @ct_sel; color: @ct_sel_fg; }
+button.ct-item:hover .ct-pill.ct-blue, button.ct-item.ct-open .ct-pill.ct-blue {
+  background-color: alpha(white, 0.22); color: @ct_sel_fg; }
+button.ct-item.ct-whole { margin: 0; border-radius: 12px; }
+button.ct-tool { color: inherit; background-color: transparent; background-image: none; border: none;
+  box-shadow: none; text-shadow: none; padding: 4px; margin: 0; min-height: 0; min-width: 0; border-radius: 6px; }
+button.ct-tool:hover { background-color: alpha(currentColor, 0.15); }
 """
 
 
@@ -152,23 +159,34 @@ def hex_rgb(h):
     return tuple(int(h[i:i + 2], 16) / 255 for i in (1, 3, 5))
 
 
+TINT = [0.2, 0.2, 0.2, 1]  # the glass's colour: the theme's menu background (install_css sets it)
+
+
 def install_css():
-    """The window takes the theme's colours; badge colours are picked for its shade."""
-    probe = Gtk.Window()
-    ctx = probe.get_style_context()
+    """The colours of the theme's menus, as the old panel menu had them: their background (the glass
+    tint), their text and their highlight. Badge colours are picked for that shade."""
+    menu, mi = Gtk.Menu(), Gtk.MenuItem(label="x")
+    menu.append(mi)
+    ctx = menu.get_style_context()
     fg = ctx.get_color(Gtk.StateFlags.NORMAL)
     bg = ctx.get_property("background-color", Gtk.StateFlags.NORMAL)
-    probe.destroy()
+    hover = mi.get_style_context()
+    hover.set_state(Gtk.StateFlags.PRELIGHT)
+    sel = hover.get_property("background-color", Gtk.StateFlags.PRELIGHT)
+    sel_fg = hover.get_color(Gtk.StateFlags.PRELIGHT)
+    menu.destroy()
     dark = 0.299 * fg.red + 0.587 * fg.green + 0.114 * fg.blue > 0.5
-    if bg.alpha < 0.5:  # the theme paints windows elsewhere; use a plain shade
-        bg = Gdk.RGBA(*((0.14, 0.15, 0.17) if dark else (0.97, 0.97, 0.98)), 1)
+    if bg.alpha < 0.05:  # the theme draws menus in a parent node; use a plain shade
+        bg = Gdk.RGBA(*((0.2, 0.2, 0.2) if dark else (0.97, 0.97, 0.98)), 1)
+    if sel.alpha < 0.5:
+        found, c = Gtk.Window().get_style_context().lookup_color("theme_selected_bg_color")
+        sel, sel_fg = (c if found else Gdk.RGBA(0.03, 0.38, 0.95, 1)), Gdk.RGBA(1, 1, 1, 1)
+    TINT[:3] = bg.red, bg.green, bg.blue
 
     def rgb(c):
         return f"rgb({int(c.red * 255)},{int(c.green * 255)},{int(c.blue * 255)})"
-    tile = ("alpha(white, 0.07)", "alpha(white, 0.12)", "alpha(white, 0.16)") if dark else \
-        ("alpha(white, 0.7)", "alpha(white, 0.95)", "alpha(black, 0.1)")
-    css = (f"@define-color ct_bg {rgb(bg)};\n@define-color ct_fg {rgb(fg)};\n@define-color ct_tile {tile[0]};\n"
-           f"@define-color ct_tile_hover {tile[1]};\n@define-color ct_edge {tile[2]};\n" + CSS)
+    css = "".join(f"@define-color {k} {rgb(v)};\n" for k, v in
+                  (("ct_bg", bg), ("ct_fg", fg), ("ct_sel", sel), ("ct_sel_fg", sel_fg))) + CSS
     text = TEXT_ON_DARK if dark else TEXT_ON_LIGHT
     for t, base in TONES.items():
         css += (f".ct-{t} {{ color: {text[t]}; }}\n"
@@ -177,6 +195,57 @@ def install_css():
     p = Gtk.CssProvider()
     p.load_from_data(css.encode())
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), p, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+
+# ---------- glass ----------
+
+BLUR = 8  # screen pixels per backdrop pixel
+
+
+def grab_backdrop():
+    """The screen, shrunk: drawn back enlarged it is blurred, the frosted glass behind the cards. Grabbed as
+    the window opens (Muffin has no blur-behind for client windows). None where the screen can't be read."""
+    # ponytail: a still, so what moves behind the open window doesn't; a compositor blur would fix that
+    root = Gdk.get_default_root_window()
+    w, h = root.get_width(), root.get_height()
+    pb = Gdk.pixbuf_get_from_window(root, 0, 0, w, h)
+    if pb:
+        for d in (4, 4 * BLUR, BLUR):  # down in two steps, then half way back up: no blocks
+            pb = pb.scale_simple(max(1, w // d), max(1, h // d), GdkPixbuf.InterpType.BILINEAR)
+    return pb
+
+
+def shadow(cr, x, y, width, height, radius):
+    """A soft drop shadow around a card, not under it (the card is see-through)."""
+    cr.save()
+    cr.rectangle(x - 40, y - 40, width + 80, height + 80)
+    rounded(cr, x, y, width, height, radius)
+    cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
+    cr.clip()
+    cr.set_source_rgba(0, 0, 0, 0.055)
+    for d in range(1, 21, 2):  # stacked, growing: darkest at the card's edge
+        rounded(cr, x - d, y - d + 6, width + 2 * d, height + 2 * d, radius + d)
+        cr.fill()
+    cr.restore()
+
+
+def tile(cr, x, y, width, height, radius, fill):
+    """A card: fill, a sheen fading down from the top, a thin light edge."""
+    cr.save()
+    rounded(cr, x, y, width, height, radius)
+    cr.clip()
+    cr.set_source_rgba(*fill)
+    cr.paint()
+    sheen = cairo.LinearGradient(0, y, 0, y + min(height, 160))
+    sheen.add_color_stop_rgba(0, 1, 1, 1, 0.09)
+    sheen.add_color_stop_rgba(1, 1, 1, 1, 0)
+    cr.set_source(sheen)
+    cr.paint()
+    rounded(cr, x + 0.5, y + 0.5, width - 1, height - 1, radius)
+    cr.set_source_rgba(1, 1, 1, 0.16)
+    cr.set_line_width(1)
+    cr.stroke()
+    cr.restore()
 
 
 def icon_path(pct, dim):
@@ -220,16 +289,23 @@ def lbl(text, *classes, markup=False, xalign=0.0, wrap=False):
     lb.set_markup(text) if markup else lb.set_text(str(text))
     if wrap:
         lb.set_line_wrap(True)
-        lb.set_max_width_chars(30)  # the natural width; the window's width decides the real one
+        lb.set_max_width_chars(30)  # the natural width; the menu's width decides the real one
     else:
         lb.set_ellipsize(Pango.EllipsizeMode.END)
     return styled(lb, *classes)
 
 
-def icon(name, *classes):
+def icon(name, *classes, size=None):
     img = Gtk.Image.new_from_icon_name(name, Gtk.IconSize.MENU)
+    if size:
+        img.set_pixel_size(size)
     img.set_valign(Gtk.Align.CENTER)
     return styled(img, *classes)
+
+
+def arrow(side):
+    """The small triangle of an item that opens a menu, on the side the menu opens."""
+    return icon("pan-start-symbolic" if side == "left" else "pan-end-symbolic", size=12)
 
 
 def pill(text, tone):
@@ -246,7 +322,7 @@ def dot(tone):
 
     def draw(w, cr):
         cr.set_source_rgb(*hex_rgb(TONES[tone]))
-        cr.arc(5, w.get_allocated_height() / 2, 5, 0, 2 * math.pi)
+        cr.arc(5, w.get_allocated_height() / 2, 4, 0, 2 * math.pi)
         cr.fill()
     d.connect("draw", draw)
     return d
@@ -277,46 +353,30 @@ def vbox(*children, spacing=10):
     return b
 
 
-def card(*children, spacing=10):
-    return styled(vbox(*children, spacing=spacing), "ct-card")
-
-
-def button(child, cb, *classes, tip=None):
-    b = Gtk.Button()
-    b.set_relief(Gtk.ReliefStyle.NONE)
-    b.add(child)
-    if cb:
-        b.connect("clicked", lambda *_: cb())
-    if tip:
-        b.set_tooltip_text(tip)
-    return styled(b, *classes)
+def pad(w, top, end, bottom, start):
+    w.set_margin_top(top)
+    w.set_margin_end(end)
+    w.set_margin_bottom(bottom)
+    w.set_margin_start(start)
+    return w
 
 
 def tool(icon_name, cb, tip, *classes):
-    """A small icon button (refresh, back, pin, delete)."""
-    return button(icon(icon_name, *classes), cb, "ct-tool", tip=tip)
+    """A small icon button inside a row (pin, delete)."""
+    b = Gtk.Button()
+    b.set_relief(Gtk.ReliefStyle.NONE)
+    b.add(icon(icon_name, *classes))
+    b.set_valign(Gtk.Align.CENTER)
+    b.set_tooltip_text(tip)
+    b.connect("clicked", lambda *_: cb())
+    return styled(b, "ct-tool")
 
 
 def two_lines(title, sub=None, tone=None):
     b = vbox(lbl(title, f"ct-{tone}" if tone else None), spacing=1)
+    b.set_valign(Gtk.Align.CENTER)
     if sub:
         b.pack_start(lbl(sub, "ct-small", "ct-dim"), False, False, 0)
-    return b
-
-
-def row(icon_name, title, cb, sub=None, tone=None):
-    """A clickable line: an icon badge, a title, and a smaller line under it."""
-    box = Gtk.Box(spacing=12)
-    box.pack_start(icon(icon_name, "ct-icon", f"ct-{tone}" if tone else None), False, False, 0)
-    box.pack_start(two_lines(title, sub, tone), True, True, 0)
-    return button(box, cb, "ct-row")
-
-
-def caption(text, note=None):
-    b = Gtk.Box()
-    b.pack_start(lbl(text, "ct-caption"), True, True, 0)
-    if note:
-        b.pack_end(lbl(note, "ct-caption", "ct-dim"), False, False, 0)
     return b
 
 
@@ -344,7 +404,7 @@ class Meter(Gtk.Box):
 
     def draw(self, widget, cr):
         width, h = widget.get_allocated_width(), widget.get_allocated_height()
-        fg = widget.get_style_context().get_color(Gtk.StateFlags.NORMAL)
+        fg = widget.get_style_context().get_color(widget.get_state_flags())
         y, bh = (h - 8) / 2, 8
         cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.16)
         rounded(cr, 0, y, width, bh, 4)
@@ -582,13 +642,28 @@ def pointer_anchor():
 
 # ---------- dashboard ----------
 
-class Dashboard(Gtk.Window):
-    """The window the panel icon opens. Pages slide in a Gtk.Stack: home, an account, settings,
-    plugins and skills. It is built from data the app gathered in the background, and rebuilt only
-    while it is open and only when what it shows changed. It closes when it loses focus or on Esc."""
+class Level:
+    """One menu of the cascade: the dashboard itself (depth 0), an account's menu, its Recent Projects or
+    Plugins and Skills, or Settings. widget is what holds it; view is the scrolled window it shows in."""
 
-    GAP = 6       # between the panel and the window
+    def __init__(self, key, widget, view, own, items, tiles):
+        self.key, self.widget, self.view, self.own, self.items, self.tiles = key, widget, view, own, items, tiles
+
+
+class Dashboard(Gtk.Window):
+    """What the panel icon opens, drawn as the old panel menu was: cards of frosted glass over the desktop,
+    accounts on the left; today, the best account, the running sessions and the actions on the right.
+    An account opens its menu beside it (and that menu its Recent Projects or Plugins and Skills one
+    further out), when pointed at or clicked, as submenus do; Settings opens over the accounts. It is one
+    window that grows to hold what is open, so the focus stays put: it closes when it loses it, or on Esc.
+    It is built from data the app gathered in the background, and rebuilt only when that changed."""
+
+    GAP = 6       # between the panel and the cards
     MARGIN = 8    # kept free at the screen edges
+    PAD = 14      # see-through room around the cards for their shadows
+    SIDE = 12     # between two menus
+    SPACE = 10    # between two cards
+    WIDTHS = {"account": 365, "projects": 555, "extras": 350}  # menus beside, for a 434px column
 
     def __init__(self, app):
         super().__init__(title="Claude Accounts")
@@ -601,30 +676,25 @@ class Dashboard(Gtk.Window):
         self.set_icon_name("claude-accounts")
         screen = self.get_screen()
         visual = screen.get_rgba_visual()
-        self.round = bool(visual and screen.is_composited())  # rounded corners need see-through ones
+        self.round = bool(visual and screen.is_composited())  # glass needs a see-through window
         if self.round:
             self.set_visual(visual)
-            self.set_app_paintable(True)
+        self.set_app_paintable(True)
         styled(self, "ct-window")
-        self.panel = styled(Gtk.Box(orientation=Gtk.Orientation.VERTICAL), "ct-panel", None if self.round else "ct-square")
-        self.stack = Gtk.Stack(vhomogeneous=False, transition_duration=160)
-        self.stack.connect("notify::transition-running", self.prune)
-        self.panel.pack_start(self.stack, True, True, 0)
-        # an account's menu, beside the dashboard (see open_sub)
-        self.side = styled(Gtk.Box(orientation=Gtk.Orientation.VERTICAL), "ct-panel")
-        self.side.set_no_show_all(True)
-        self.outer = Gtk.Box()
-        self.outer.pack_start(self.side, False, False, 0)
-        self.outer.pack_start(self.panel, True, True, 0)
-        self.outer.show()
-        self.add(self.outer)
-        self.page, self.sig, self.anchor, self.columns, self.hidden_at, self.count = ("home",), None, None, 1, 0, 0
-        self.sub = self.sub_sig = self.hovered = self.geom = None
-        self.cards, self.one = {}, 420
+        self.root = styled(Gtk.Box(spacing=self.SIDE), "ct-root")
+        self.root.set_border_width(self.PAD)
+        self.root.connect("draw", self.draw_glass)
+        self.root.connect_after("size-allocate", lambda *_: GLib.idle_add(self.shape))
+        self.root.show()
+        self.add(self.root)
+        self.levels, self.sig, self.anchor, self.columns, self.hidden_at = [], None, None, 2, 0
+        self.one, self.cap, self.cap_sub, self.side, self.origin = 434, 800, 800, "left", (0, 0)
+        self.backdrop = self.hot = None
+        self.depth, self.kind, self.collect, self.tiles = 0, "card", [], []
         self.connect("delete-event", lambda *_: self.hide() or True)
         self.connect("focus-out-event", lambda *_: self.hide())
         self.connect("key-press-event", self.key)
-        self.connect("hide", lambda *_: (setattr(self, "hidden_at", time.time()), self.close_sub()))
+        self.connect("hide", self.hidden)
 
     # ----- showing -----
 
@@ -636,29 +706,33 @@ class Dashboard(Gtk.Window):
         self.popup(anchor, t)
 
     def popup(self, anchor=None, t=0):
-        """Open on the home page next to the panel icon (or the pointer), sized to fit the screen:
-        two columns, or one where the screen is too narrow for two."""
+        """Open the dashboard by the panel icon (or the pointer): two columns, or one where the screen
+        is too narrow. Its menus open on the side with more room."""
         self.anchor = anchor or pointer_anchor()
         wa = Gdk.Display.get_default().get_monitor_at_point(*self.anchor[:2]).get_workarea()
+        self.backdrop = grab_backdrop() if self.round and not self.get_visible() else self.backdrop
+        TINT[3] = 0.8 if self.backdrop else 1
         ctx = self.get_pango_context()
         cw = ctx.get_metrics(ctx.get_font_description(), None).get_approximate_char_width() / Pango.SCALE
-        one = self.one = int(max(48 * cw, 420))
-        maxw = wa.width - 2 * self.MARGIN
-        self.page, self.columns = ("home",), 2 if maxw >= 2 * one else 1  # side by side, as the old menu
+        self.one = int(max(48 * cw, 434))
+        self.columns = 2 if wa.width - 2 * (self.MARGIN + self.PAD) >= 2 * self.one + self.SPACE else 1
+        self.cap = wa.height - 2 * (self.MARGIN + self.PAD)
+        self.close(0, place=False)
         self.render(force=True)
-        maxh = wa.height - 2 * self.MARGIN
-        self.panel.show_all()
-        w = int(min(max(self.columns * one, self.panel.get_preferred_width()[1]), maxw))
-        h = min(self.height(w), maxh)
-        for sc in self.scrollers():
-            sc.set_max_content_height(maxh)
+        main = self.levels[0].view
+        mw, mh = main.get_preferred_width()[1], main.get_preferred_height()[1]
+        self.cap_sub = min(max(mh, 400), self.cap)  # a menu beside is as tall as the dashboard at most
         ax, ay, side = self.anchor
-        x = {"left": ax + self.GAP, "right": ax - w - self.GAP}.get(side, ax - w // 2)
-        y = {"bottom": ay - h - self.GAP, "top": ay + self.GAP}.get(side, ay)
-        x = max(wa.x + self.MARGIN, min(x, wa.x + wa.width - w - self.MARGIN))
-        y = max(wa.y + self.MARGIN, min(y, wa.y + wa.height - h - self.MARGIN))
-        self.geom = (x, y, w, h, wa)
-        self.place(x, y, w, h)
+        x = {"left": ax + self.GAP, "right": ax - mw - self.GAP}.get(side, ax - mw // 2)
+        y = {"bottom": ay - mh - self.GAP, "top": ay + self.GAP}.get(side, ay)
+        lo, hi = wa.x + self.MARGIN, wa.x + wa.width - self.MARGIN
+        x = max(lo, min(x, hi - mw))
+        y = max(wa.y + self.MARGIN, min(y, wa.y + wa.height - self.MARGIN - mh))
+        self.side = "left" if x - lo >= hi - (x + mw) else "right"
+        if side not in ("left", "right"):  # a top or bottom panel: slide away from the menus, still by the icon
+            x = min(hi - mw, ax - 24) if self.side == "left" else max(lo, ax + 24 - mw)
+        self.origin = (x, y)
+        self.place()
         self.realize()
         if not t and GdkX11 and isinstance(self.get_window(), GdkX11.X11Window):
             # Not opened by a click (launched again, or from the indicator's menu): without a recent
@@ -667,193 +741,285 @@ class Dashboard(Gtk.Window):
         self.show()
         self.present_with_time(t or Gtk.get_current_event_time())
 
-    def place(self, x, y, w, h):
+    def place(self):
+        """Size the window to what is open, keeping the dashboard itself where it opened."""
+        if not self.levels:
+            return
+        w, h = self.root.get_preferred_width()[1], self.root.get_preferred_height()[1]
+        beside = w - 2 * self.PAD - self.levels[0].view.get_preferred_width()[1]
+        x, y = self.origin
+        x -= self.PAD + (beside if self.side == "left" else 0)
         self.set_size_request(w, h)
         self.resize(w, h)
-        self.move(x, y)
+        self.move(x, y - self.PAD)
+        # once it has shrunk: the move may have been kept on the screen at the old, wider size
+        GLib.timeout_add(80, lambda: self.get_visible() and self.get_size()[0] == w and self.move(x, y - self.PAD))
 
-    # ----- an account's menu beside the dashboard, as the old panel menu opened its submenus -----
+    def shape(self):
+        """Clicks on the see-through room around the menus reach what is behind (and so close this)."""
+        win = self.get_window()
+        if win and self.round:
+            region = cairo.Region()
+            for lv in self.levels:
+                p = lv.view.translate_coordinates(self, 0, 0) if lv.own else None
+                if p:
+                    region.union(cairo.RectangleInt(p[0], p[1], lv.view.get_allocated_width(),
+                                                    lv.view.get_allocated_height()))
+            win.input_shape_combine_region(region, 0, 0)
+        return False
 
-    def sub_room(self):
-        """Where an account's menu fits: "left", "right" or None (then accounts open as a page)."""
-        if not (self.geom and self.round and self.columns == 2 and self.page == ("home",)):
-            return None
-        x, _y, w, _h, wa = self.geom
-        if x - self.one >= wa.x + self.MARGIN:
-            return "left"
-        return "right" if x + w + self.one <= wa.x + wa.width - self.MARGIN else None
-
-    def hover(self, name):
-        self.hovered = name
-        if self.sub_room():
-            GLib.timeout_add(250, lambda: self.hovered == name and self.sub != name and self.open_sub(name) and False)
-
-    def open_sub(self, name):
-        """Open name's menu beside the dashboard, level with its top and as tall (the window grows)."""
-        where = self.sub_room()
-        if not where:
-            return self.go(("account", name))
-        self.sub, self.sub_sig = name, None
-        self.render_sub()
-        for n, c in self.cards.items():
-            (c.get_style_context().add_class if n == name else c.get_style_context().remove_class)("ct-open")
-        x, y, w, h, _wa = self.geom
-        self.outer.reorder_child(self.side, 0 if where == "left" else 1)
-        self.side.set_size_request(self.one, -1)
-        self.side.show()
-        self.place(x - self.one if where == "left" else x, y, w + self.one, h)
-
-    def close_sub(self):
-        if self.sub is None:
-            return
-        self.sub = self.hovered = None
-        self.side.hide()
-        for c in self.cards.values():
-            c.get_style_context().remove_class("ct-open")
-        if self.geom:
-            self.place(*self.geom[:4])
-
-    def render_sub(self):
-        sig = self.app.signature(("account", self.sub), 1)
-        if sig == self.sub_sig:
-            return
-        self.sub_sig = sig
-        content = self.account(self.sub, columns=1, sub=True)
-        if content is None:  # the account is gone
-            return self.close_sub()
-        old = [c for c in self.side.get_children() if isinstance(c, Gtk.ScrolledWindow)]
-        keep = old[0].get_vadjustment().get_value() if old else 0
-        for c in self.side.get_children():
-            c.destroy()
-        head, body = content
-        sc = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
-        sc.add(styled(body, "ct-body"))
-        self.side.pack_start(styled(head, "ct-head"), False, False, 0)
-        self.side.pack_start(sc, True, True, 0)
-        for c in self.side.get_children():
-            c.show_all()
-        if keep:
-            GLib.idle_add(lambda: sc.get_vadjustment().set_value(keep) and False, priority=GLib.PRIORITY_LOW)
-
-    def height(self, width):
-        self.panel.show_all()
-        return self.panel.get_preferred_height_for_width(width)[1]
-
-    def scrollers(self):
-        return [c.scroller for c in self.stack.get_children() if hasattr(c, "scroller")]
+    def draw_glass(self, w, cr):
+        """The glass under the cards: the blurred screen tinted with the theme's menu colour, a lighter
+        tile with a sheen and an edge over it, a soft shadow around. Settings is one pane of it, its cards
+        tiles on that."""
+        win = self.get_window()
+        if not win:
+            return False
+        if not self.round:  # no see-through window: a plain background
+            cr.set_source_rgb(*TINT[:3])
+            cr.paint()
+        _, ox, oy = win.get_origin()
+        boxes = []
+        for lv in self.levels:
+            if not lv.view.get_mapped():
+                continue
+            vx, vy = lv.view.translate_coordinates(w, 0, 0)
+            view = (vx, vy, lv.view.get_allocated_width(), lv.view.get_allocated_height())
+            for t in lv.tiles:
+                p = t.translate_coordinates(w, 0, 0) if t.get_mapped() else None
+                if p:
+                    boxes.append(((p[0], p[1], t.get_allocated_width(), t.get_allocated_height(), 12), t.glass, view))
+        boxes.sort(key=lambda b: b[1] != "panel")  # a pane before the cards on it
+        for box, kind, (vx, vy, vw, vh) in boxes:
+            whole = box[1] >= vy and box[1] + box[3] <= vy + vh  # not scrolled partly out of view
+            room = self.PAD if whole else 0
+            cr.save()
+            cr.rectangle(vx - self.PAD, vy - room, vw + 2 * self.PAD, vh + 2 * room)
+            cr.clip()
+            shadow(cr, *box)
+            cr.restore()
+        for box, kind, (vx, vy, vw, vh) in boxes:
+            cr.save()
+            cr.rectangle(vx, vy, vw, vh)
+            cr.clip()
+            if kind != "inner":  # over the screen: the blurred screen, tinted
+                cr.save()
+                rounded(cr, *box)
+                cr.clip()
+                if self.backdrop:
+                    cr.save()
+                    cr.translate(-ox, -oy)
+                    cr.scale(BLUR, BLUR)
+                    Gdk.cairo_set_source_pixbuf(cr, self.backdrop, 0, 0)
+                    cr.paint()
+                    cr.restore()
+                cr.set_source_rgba(*TINT)
+                cr.paint()
+                cr.restore()
+            tile(cr, *box, (1, 1, 1, 0 if kind == "panel" else 0.07))
+            cr.restore()
+        return False
 
     def key(self, _w, ev):
         if ev.keyval == Gdk.KEY_Escape:
-            if self.sub:
-                return self.close_sub() or True
-            self.go(("home",), back=True) if self.page != ("home",) else self.hide()
+            self.close(len(self.levels) - 1) if len(self.levels) > 1 else self.hide()
             return True
         return False
+
+    def hidden(self, *_):
+        self.hidden_at = time.time()
+        self.close(1, place=False)
 
     def hide_for_dialog(self):
         """Dialogs can't sit under a window that closes when it loses focus: close it first."""
         self.hide()
 
-    # ----- pages -----
+    # ----- the cascade -----
 
-    def go(self, page, back=False):
-        self.close_sub()
-        self.page = page
-        self.render(force=True, transition=Gtk.StackTransitionType.SLIDE_RIGHT if back else
-                    Gtk.StackTransitionType.SLIDE_LEFT)
-
-    def render(self, force=False, transition=Gtk.StackTransitionType.NONE):
-        """Show the current page; rebuild it only when what it shows changed (or a new page)."""
+    def render(self, force=False):
+        """Build what is open; rebuild it only when what it shows changed."""
         if not (force or self.get_visible()):
             return
-        if self.sub:
-            self.render_sub()
-        sig = self.app.signature(self.page, self.columns)
+        keys = [lv.key for lv in self.levels] or [("home",)]
+        sig = self.app.signature(keys, self.columns)
         if sig == self.sig and not force:
             return
-        self.sig = sig
-        old = self.stack.get_visible_child()
-        keep = old.scroller.get_vadjustment().get_value() if old is not None and old.page == self.page else 0
-        builder = {"home": self.home, "account": self.account, "settings": self.settings_page,
-                   "extras": self.extras}[self.page[0]]
-        content = builder(*self.page[1:])
-        if content is None:  # e.g. the account is gone
-            self.page = ("home",)
-            content = self.home()
-        head, body = content
-        sc = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True)
-        if old is not None and hasattr(old, "scroller"):
-            sc.set_max_content_height(old.scroller.get_max_content_height())
-        sc.add(styled(body, "ct-body"))
-        page = vbox(head and styled(head, "ct-head"), spacing=0)
-        page.pack_start(sc, True, True, 0)
-        page.scroller, page.page = sc, self.page
-        self.count += 1
-        self.stack.add_named(page, f"p{self.count}")
-        page.show_all()
-        self.stack.set_visible_child_full(f"p{self.count}", transition)
-        if keep:
-            GLib.idle_add(lambda: sc.get_vadjustment().set_value(keep) and False, priority=GLib.PRIORITY_LOW)
-        if transition == Gtk.StackTransitionType.NONE:
-            self.prune()
+        scroll = [lv.view.get_vadjustment().get_value() if lv.own else 0 for lv in self.levels]
+        self.close(0, place=False)
+        for d, k in enumerate(keys):
+            if not self.add_level(d, k):
+                break
+        for lv, v in zip(self.levels, scroll):
+            if v and lv.own:
+                GLib.idle_add(lambda a=lv.view.get_vadjustment(), v=v: a.set_value(v) and False,
+                              priority=GLib.PRIORITY_LOW)
+        self.settled()
 
-    def prune(self, *_):
-        if not self.stack.get_transition_running():
-            for c in self.stack.get_children():
-                if c is not self.stack.get_visible_child():
-                    self.stack.remove(c)
+    def settled(self):
+        self.sig = self.app.signature([lv.key for lv in self.levels], self.columns)
+        self.mark()
+        if self.get_visible():
+            self.place()
 
-    def header(self, title, sub=None, back=True, tools=()):
-        h = Gtk.Box(spacing=6)
-        if back:
-            h.pack_start(tool("go-previous-symbolic", lambda: self.go(("home",), back=True), "Back (Esc)"), False, False, 0)
-        t = vbox(lbl(title, "ct-app"), spacing=1)
-        if sub:
-            t.pack_start(lbl(sub, "ct-small", "ct-dim"), False, False, 0)
-        h.pack_start(t, True, True, 0)
-        for t in tools:
-            h.pack_end(t, False, False, 0)
-        return h
+    def open(self, depth, key):
+        if len(self.levels) > depth and self.levels[depth].key == key:
+            return
+        self.close(depth, place=False)
+        self.add_level(depth, key)
+        self.settled()
 
-    # home, laid out like the panel menu it replaced: accounts on the left; today, the best account,
-    # running sessions and the actions on the right
+    def close(self, depth, place=True):
+        if len(self.levels) <= depth:
+            return
+        for lv in reversed(self.levels[depth:]):
+            lv.widget.destroy()
+            if lv.key[0] == "settings" and depth:
+                self.accounts.show()
+        del self.levels[depth:]
+        if place:
+            self.settled()
 
-    def home(self):
+    def add_level(self, depth, key):
+        self.depth, self.kind, self.collect, self.tiles = depth, "card", [], []
+        body = getattr(self, "menu_" + key[0])(*key[1:])
+        if body is None:  # nothing to show (an account that is gone)
+            return None
+        if key[0] == "settings":  # over the accounts, as tall as the dashboard
+            main = self.levels[0].view
+            body.set_size_request(self.one, max(main.get_preferred_height()[1], body.get_preferred_height()[1]))
+            self.accounts.hide()
+            self.slot.pack_start(body, True, True, 0)
+            body.show_all()
+            lv = Level(key, body, main, False, self.collect, self.tiles)
+        else:
+            sc = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True,
+                                    propagate_natural_width=True, valign=Gtk.Align.START)
+            sc.set_max_content_height(self.cap_sub if depth else self.cap)
+            if depth:
+                body.set_size_request(int(self.WIDTHS[key[0]] * self.one / 434), -1)
+            sc.add(body)
+            self.root.pack_start(sc, False, False, 0)
+            if depth and self.side == "left":
+                self.root.reorder_child(sc, 0)
+            sc.show_all()
+            lv = Level(key, sc, sc, True, self.collect, self.tiles)
+        self.levels.append(lv)
+        return lv
+
+    def mark(self):
+        """Keep the item whose menu is open highlighted, as a menu does while its submenu shows."""
+        for d, lv in enumerate(self.levels):
+            nxt = self.levels[d + 1].key if d + 1 < len(self.levels) else None
+            for it in lv.items:
+                ctx = it.get_style_context()
+                ctx.add_class("ct-open") if it.opens is not None and it.opens == nxt else ctx.remove_class("ct-open")
+
+    def entered(self, it, _ev):
+        """Pointing at an item opens its menu after a moment, and pointing at another one of the same
+        menu closes the menus beyond it, as in a menu."""
+        self.hot = it
+        if it.opens is not None or len(self.levels) > it.depth + 1:
+            GLib.timeout_add(250, self.pointed, it)
+        return False
+
+    def left(self, it, _ev):
+        if self.hot is it:
+            self.hot = None
+        return False
+
+    def pointed(self, it):
+        if self.hot is it and it.get_mapped():
+            self.open(it.depth + 1, it.opens) if it.opens is not None else self.close(it.depth + 1)
+        return False
+
+    # ----- building blocks -----
+
+    def item(self, child, cb=None, opens=None, whole=False, tip=None):
+        """Something to click: a row of a card, or a whole card. opens: the menu it opens."""
+        b = Gtk.Button()
+        b.set_relief(Gtk.ReliefStyle.NONE)
+        b.add(child)
+        styled(b, "ct-item", "ct-whole" if whole else None)
+        b.depth, b.opens = self.depth, opens
+        if opens is not None:
+            b.connect("clicked", lambda *_: self.open(b.depth + 1, opens))
+        elif cb:
+            b.connect("clicked", lambda *_: cb())
+        b.connect("enter-notify-event", self.entered)
+        b.connect("leave-notify-event", self.left)
+        if tip:
+            b.set_tooltip_text(tip)
+        if whole:
+            b.glass = self.kind
+            self.tiles.append(b)
+        self.collect.append(b)
+        return b
+
+    def card(self, *children, rows=False, spacing=12):
+        """A card, on its own piece of glass. A card of rows (menu items) has them reach its edges."""
+        inner = vbox(*children, spacing=0 if rows else spacing)
+        pad(inner, *((4, 0, 4, 0) if rows else (16, 16, 16, 16)))
+        c = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        c.pack_start(inner, True, True, 0)
+        c.glass = self.kind
+        self.tiles.append(c)
+        return c
+
+    def caption(self, text, note=None, rows=True):
+        """A card's small heading; greyed in the menus beside, like a menu's headings."""
+        b = Gtk.Box()
+        b.pack_start(lbl(text, "ct-caption", "ct-off" if self.depth else None), True, True, 0)
+        if note:
+            b.pack_end(lbl(note, "ct-caption", "ct-dim"), False, False, 0)
+        return pad(b, 14, 16, 6, 32 if self.depth else 16) if rows else b
+
+    def row(self, icon_name, title, cb=None, sub=None, tone=None, opens=None, end=()):
+        """A menu item: an icon badge, a title and a smaller line under it. In the menus beside, which
+        open theirs outwards, the arrow of one that opens a menu is on that side; in the dashboard, right."""
+        box = Gtk.Box(spacing=12)
+        if self.depth:
+            slot = arrow(self.side) if opens is not None else Gtk.Box()
+            slot.set_size_request(12, -1)
+            box.pack_start(slot, False, False, 0)
+        box.pack_start(icon(icon_name, "ct-icon", f"ct-{tone}" if tone else None), False, False, 0)
+        box.pack_start(two_lines(title, sub, tone) if sub else lbl(title, f"ct-{tone}" if tone else None), True, True, 0)
+        for e in end:
+            box.pack_end(e, False, False, 0)
+        if opens is not None and not self.depth:
+            box.pack_end(arrow("right"), False, False, 0)
+        v = 17 if sub else 10 if self.depth else 9
+        pad(box, v, 12, v, 0 if self.depth else 8)
+        return self.item(box, cb, opens)
+
+    def tone(self, name, now):
+        """An account's colour: its 5-hour use, grey when stale or logged out, blue while logging in."""
+        a = self.app
+        u, ident = a.snap["use"].get(name), a.ids.get(name)
+        w5 = window(u, "session", now)
+        if a.login and a.login.name == name:
+            return "blue"
+        stale = not u or now - u.get("updated", 0) > STALE
+        return "grey" if (ident is not None and "error" in ident) or stale or not w5 else tone_for(w5["pct"])
+
+    # ----- the dashboard: accounts left; today, best account, running sessions, actions right -----
+
+    def menu_home(self):
         a, s, now = self.app, self.app.snap, time.time()
-        names = s["names"]
-        self.cards = {}
-        left = vbox(*(self.account_card(n, now) for n in names))
-        right = vbox()
-        if a.login:
-            show, cancel = Gtk.Button(label="Show login window"), Gtk.Button(label="Cancel login")
-            show.connect("clicked", lambda *_: a.login and (self.hide(), a.login.present()))
-            cancel.connect("clicked", lambda *_: a.login and a.login.cancel())
-            right.pack_start(styled(vbox(lbl(f"Waiting for the browser login of {a.login.name}…", wrap=True),
-                                         hbox(show, cancel, spacing=6), spacing=8), "ct-banner", "ct-blue"),
-                             False, False, 0)
-        elif a.note:
-            right.pack_start(styled(lbl(a.note[0], wrap=True), "ct-banner", "ct-amber" if a.note[1] else "ct-green"),
-                             False, False, 0)
-        right.pack_start(self.today_card(), False, False, 0)
-        best = best_account(names, s["use"], a.ids, now)
+        self.accounts = vbox(*(self.account_card(n, now) for n in s["names"]), spacing=self.SPACE)
+        self.slot = vbox(self.accounts, spacing=0)
+        right = vbox(self.today_card(), spacing=self.SPACE)
+        best = best_account(s["names"], s["use"], a.ids, now)
         if best:
             right.pack_start(self.best_card(best, now), False, False, 0)
         right.pack_start(self.running_card(), False, False, 0)
-        right.pack_start(card(
-            row("list-add-symbolic", "Add account…", a.add_account, "Log in to another Claude account"),
-            row("view-refresh-symbolic", "Refresh now", a.refresh_now),
-            row("application-x-addon-symbolic", "Plugins and skills", lambda: self.go(("extras",)),
-                f"{plural(len(s['plugins']), 'plugin')}, {plural(len(s['skills']), 'skill')}, shared by all accounts"),
-            row("web-browser-symbolic", "Open usage page…", lambda: a.xdg_open(USAGE_PAGE), "claude.ai/settings/usage"),
-            row("emblem-system-symbolic", "Settings", lambda: self.go(("settings",))),
-            row("system-shutdown-symbolic", "Quit", a.quit, tone="red"), spacing=2), False, False, 0)
+        right.pack_start(self.actions_card(), False, False, 0)
         if self.columns == 2:
-            body = Gtk.Box(spacing=12, homogeneous=True)
-            body.pack_start(left, True, True, 0)
-            body.pack_start(right, True, True, 0)
-        else:
-            body = vbox(left, right)
-        return None, styled(body, "ct-top")
+            self.slot.set_size_request(self.one, -1)
+            right.set_size_request(self.one, -1)
+            return hbox(self.slot, right, spacing=self.SPACE)
+        body = vbox(self.slot, right, spacing=self.SPACE)
+        body.set_size_request(self.one, -1)
+        return body
 
     def account_card(self, name, now):
         a = self.app
@@ -861,14 +1027,11 @@ class Dashboard(Gtk.Window):
         used = last_used(u)
         dim = not u or now - u.get("updated", 0) > STALE
         logged_out = ident is not None and "error" in ident
-        w5 = window(u, "session", now)
-        login = a.login and a.login.name == name
-        tone = "blue" if login else "grey" if logged_out or dim or not w5 else tone_for(w5["pct"])
         top = Gtk.Box(spacing=8)
         top.pack_start(lbl(name, "ct-title"), False, False, 0)
         if (ident or {}).get("plan"):
             top.pack_start(pill(ident["plan"], plan_tone(ident["plan"])), False, False, 0)
-        if login:
+        if a.login and a.login.name == name:
             top.pack_end(pill("Logging in…", "blue"), False, False, 0)
         elif logged_out:
             top.pack_end(pill("Not logged in", "amber"), False, False, 0)
@@ -882,24 +1045,25 @@ class Dashboard(Gtk.Window):
         avatar = Gtk.Image.new_from_icon_name("avatar-default-symbolic", Gtk.IconSize.LARGE_TOOLBAR)
         avatar.set_valign(Gtk.Align.CENTER)
         who = Gtk.Box(spacing=10)
-        who.pack_start(styled(avatar, f"ct-{tone}"), False, False, 0)  # the account's state
+        who.pack_start(styled(avatar, f"ct-{self.tone(name, now)}"), False, False, 0)  # the account's state
         who.pack_start(head, True, True, 0)
-        box = vbox(who, spacing=18)
+        inner = vbox(who, spacing=18)
         meters = [Meter(c, w, n, now, dim) for c, k, n in (("SESSION", "session", SESSION_LEN), ("WEEKLY", "weekly", WEEK_LEN))
                   if (w := window(u, k, now))]
         for m in meters:
-            box.pack_start(m, False, False, 0)
+            inner.pack_start(m, False, False, 0)
         if not meters and not logged_out:
-            box.pack_start(lbl("No usage yet. Open it and send a message.", "ct-small", "ct-dim"), False, False, 0)
+            inner.pack_start(lbl("No usage yet. Open it and send a message.", "ct-small", "ct-dim"), False, False, 0)
         note = a.api_note(name, u, now)
         if note:
-            box.pack_start(lbl(note, "ct-small", "ct-amber", wrap=True), False, False, 0)
-        b = button(box, lambda: self.open_sub(name), "ct-card", "ct-open" if name == self.sub else None,
-                   tip=f"Sessions and projects with {name}")
-        b.connect("enter-notify-event", lambda *_: self.hover(name))
-        b.connect("leave-notify-event", lambda *_: setattr(self, "hovered", None))
-        self.cards[name] = b
-        return b
+            inner.pack_start(lbl(note, "ct-small", "ct-amber", wrap=True), False, False, 0)
+        pad(inner, 22, 16, 20, 15)
+        mark = arrow(self.side)
+        mark.set_size_request(12, -1)
+        mark.set_margin_start(4)
+        card = hbox(mark, spacing=0)
+        card.pack_start(inner, True, True, 0)
+        return self.item(card, opens=("account", name), whole=True)
 
     def today_card(self):
         t = self.app.today
@@ -907,11 +1071,11 @@ class Dashboard(Gtk.Window):
         top.pack_start(icon("utilities-system-monitor-symbolic", "ct-red"), False, False, 0)
         top.pack_start(lbl("Today's Activity", "ct-title"), True, True, 0)
         if not t:
-            return card(top, lbl("Reading today's sessions…", "ct-small", "ct-dim"), spacing=18)
+            return self.card(top, lbl("Reading today's sessions…", "ct-small", "ct-dim"), spacing=18)
         cost = lbl(f"${t['cost']:.2f}", "ct-big", "ct-green", xalign=1)
-        cost.set_tooltip_text("What today's use would cost at API prices, all accounts")
+        cost.set_tooltip_text("API-equivalent cost, all accounts")
         top.pack_end(cost, False, False, 0)
-        c = card(top, spacing=18)
+        lines = []
         rows = [[(t["turns"], "Prompts", "chat-symbolic"), (active_text(t["active"]), "Active", "preferences-system-time-symbolic"),
                  (t["lines"], "Lines", "text-x-generic-symbolic")]]
         models = sorted(t["replies"].items(), key=lambda kv: -kv[1])[:3]
@@ -927,8 +1091,8 @@ class Dashboard(Gtk.Window):
                     cap.pack_start(icon(mark, "ct-dim"), False, False, 0)
                 cap.pack_start(lbl(k, "ct-small", "ct-dim"), False, False, 0)
                 line.pack_start(vbox(lbl(v, "ct-pct", xalign=0.5), cap, spacing=4), True, True, 0)
-            c.pack_start(line, False, False, 0)
-        return c
+            lines.append(line)
+        return self.card(top, *lines, spacing=18)
 
     def best_card(self, name, now):
         """The account with the most room left; a click continues the last session on it."""
@@ -939,204 +1103,213 @@ class Dashboard(Gtk.Window):
         top = Gtk.Box(spacing=10)
         top.pack_start(dot(tone_for(used)), False, False, 0)
         top.pack_start(lbl(name, "ct-pct"), False, False, 0)
-        top.pack_start(lbl(f"5h {w5['pct'] if w5 else 0}% · 7d {w7['pct'] if w7 else 0}%", "ct-small", "ct-dim"), True, True, 0)
+        top.pack_start(lbl(" · ".join([f"5h {w5['pct']}%" if w5 else "5h unused", f"7d {w7['pct']}%" if w7 else "7d unused"]),
+                           "ct-small", "ct-dim"), True, True, 0)
         top.pack_end(pill(f"{100 - used}% left", tone_for(used)), False, False, 0)
         folders = s["folders"]
         go = lbl(f"▶  Continue last session in {os.path.basename(folders[0]) or folders[0]}" if folders
                  else "▶  Open in a folder…", "ct-small", "ct-green")
         go.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
         go.set_margin_start(20)
-        box = vbox(caption("BEST ACCOUNT NOW"), top, go, spacing=12)
-        return button(box, (lambda: a.open(name, folders[0], ["--continue"])) if folders else lambda: a.choose_folder(name),
-                      "ct-card", tip=short(folders[0]) if folders else None)
+        box = pad(vbox(self.caption("BEST ACCOUNT NOW", rows=False), top, go, spacing=12), 16, 16, 16, 16)
+        return self.item(box, (lambda: a.open(name, folders[0], ["--continue"])) if folders
+                         else lambda: a.choose_folder(name), whole=True)
 
     def running_card(self):
         running, most = self.app.snap["running"], 3
-        c = card(caption("RUNNING SESSIONS", None if running else "none open"), spacing=12)
+        rows = []
         for x in running[:most]:
             r = Gtk.Box(spacing=10)
             r.pack_start(dot("green" if x["busy"] else "grey"), False, False, 0)
             r.pack_start(lbl(x["name"] or os.path.basename(x["cwd"]) or "session", "ct-small"), True, True, 0)
             r.pack_end(pill(x["account"], "blue"), False, False, 0)
-            r.set_tooltip_text(short(x["cwd"]) + (" (background)" if x["bg"] else "") +
-                               (" · working" if x["busy"] else " · idle"))
-            c.pack_start(r, False, False, 0)
+            r.set_tooltip_text(short(x["cwd"]) + (" (background)" if x["bg"] else ""))
+            rows.append(r)
         if len(running) > most:
-            c.pack_start(lbl(f"+ {len(running) - most} more", "ct-caption", "ct-dim"), False, False, 0)
-        return c
+            rows.append(lbl(f"+ {len(running) - most} more", "ct-caption", "ct-dim"))
+        return self.card(self.caption("RUNNING SESSIONS", None if running else "none open", rows=False), *rows)
 
-    # one account: open Claude with it, its projects and sessions, log in, remove
+    def actions_card(self):
+        a = self.app
+        rows = []
+        if a.login:
+            rows += [styled(lbl(f"Waiting for the browser login of {a.login.name}…", "ct-small", wrap=True), "ct-banner", "ct-blue"),
+                     self.row("dialog-password-symbolic", "Show login window", lambda: a.login and (self.hide(), a.login.present())),
+                     self.row("process-stop-symbolic", "Cancel login", lambda: a.login and a.login.cancel())]
+        elif a.note:
+            rows.append(styled(lbl(a.note[0], "ct-small", wrap=True), "ct-banner", "ct-amber" if a.note[1] else "ct-green"))
+        add = self.row("list-add-symbolic", "Add account…", a.add_account)
+        add.set_sensitive(a.login is None)
+        rows += [add, self.row("view-refresh-symbolic", "Refresh now", a.refresh_now),
+                 self.row("web-browser-symbolic", "Open usage page…", lambda: a.xdg_open(USAGE_PAGE)),
+                 self.row("preferences-system-symbolic", "Settings", opens=("settings",)),
+                 self.row("system-shutdown-symbolic", "Quit", a.quit, tone="red")]
+        return self.card(*rows, rows=True)
 
-    def account(self, name, columns=None, sub=False):
+    # ----- an account's menu -----
+
+    def menu_account(self, name):
         a, s, now = self.app, self.app.snap, time.time()
         if name not in s["names"]:
             return None
         ident = a.ids.get(name) or {}
         logged_in = "email" in ident
         cmd = "claude" if name == "main" else f"claude-{name}"
-        tools = [pill(ident["plan"], plan_tone(ident["plan"]))] if ident.get("plan") else []
-        if sub:
-            tools.insert(0, tool("window-close-symbolic", self.close_sub, "Close (Esc)"))
-        head = self.header(name, a.email(ident["email"]) if logged_in else ident.get("error"), back=not sub, tools=tools)
-
-        copy = Gtk.Button(label="Copy")
-        copy.connect("clicked", lambda b: (a.copy(cmd), b.set_label("Copied")))
-        cmd_row = Gtk.Box(spacing=8)
-        cmd_row.pack_start(styled(lbl(cmd), "ct-code"), False, False, 0)
-        cmd_row.pack_start(lbl("in any terminal", "ct-small", "ct-dim"), True, True, 0)
-        cmd_row.pack_end(copy, False, False, 0)
-
-        folders = s["folders"]
-        actions = card(caption("OPEN CLAUDE"), spacing=2)
+        top = hbox(dot(self.tone(name, now)), lbl(name, "ct-title"), spacing=8)
+        if ident.get("plan"):
+            top.pack_start(pill(ident["plan"], plan_tone(ident["plan"])), False, False, 0)
+        head = vbox(top, spacing=4)
+        who = ident.get("email") or ident.get("error") or ""
+        if who:
+            head.pack_start(pad(lbl(a.email(who) if logged_in else who, "ct-small", "ct-dim"), 0, 0, 0, 18), False, False, 0)
+        head.pack_start(pad(hbox(lbl(cmd, "ct-code"), lbl("click to copy", "ct-small", "ct-dim")), 4, 0, 0, 18), False, False, 0)
+        pad(head, 18, 16, 18, 38)
+        cards = [self.item(head, lambda: (a.copy(cmd), notify("Claude", f"Copied: {cmd}")), whole=True,
+                           tip="Its command, for any terminal")]
+        folders, pins = s["folders"], a.settings
+        rows = []
         if folders:
-            actions.pack_start(row("media-playback-start-symbolic", "Continue the last session",
-                                   lambda: a.open(name, folders[0], ["--continue"]), f"in {short(folders[0])}",
-                                   tone="green"), False, False, 0)
-        actions.pack_start(row("folder-open-symbolic", "New session in a folder…", lambda: a.choose_folder(name),
-                               "Pick any project folder"), False, False, 0)
-        actions.pack_start(row("user-home-symbolic", "New session in your home folder", lambda: a.open(name, HOME)),
-                           False, False, 0)
-        actions.pack_start(cmd_row, False, False, 6)
-
-        acct = card(caption("ACCOUNT"), spacing=2)
-        login = row("changes-prevent-symbolic", "Log in again…" if logged_in else "Log in…",
-                    lambda: a.start_login(name, ident.get("email", "")), "Opens your browser",
-                    None if logged_in else "amber")
+            rows.append(self.row("media-playback-start-symbolic", "Continue last session",
+                                 lambda: a.open(name, folders[0], ["--continue"]), f"in {short(folders[0])}", "green"))
+        if folders or s["sessions"] or pins["pinned"] or pins["pinned_sessions"]:
+            rows.append(self.row("folder-symbolic", "Recent Projects", sub="And sessions, pinned first", opens=("projects", name)))
+        if rows:
+            cards.append(self.card(self.caption("OPEN CLAUDE"), *rows, rows=True))
+        cards.append(self.card(self.caption("NEW SESSION"), self.row("folder-symbolic", "Choose a folder…",
+                                                                      lambda: a.choose_folder(name), "Pick any project"), rows=True))
+        if s["plugins"] or s["skills"]:
+            cards.append(self.card(self.caption("CLAUDE CODE"), self.row("application-x-addon-symbolic", "Plugins and Skills",
+                                                                          sub="What is installed", opens=("extras",)), rows=True))
+        login = self.row("changes-prevent-symbolic", "Log in again…" if logged_in else "Log in…",
+                         lambda: a.start_login(name, ident.get("email", "")), tone=None if logged_in else "amber")
         login.set_sensitive(a.login is None)  # one browser login at a time
-        acct.pack_start(login, False, False, 0)
-        acct.pack_start(row("utilities-terminal-symbolic", "Log in in a terminal…",
-                            lambda: a.acc(["login", name], HOME)), False, False, 0)
+        rows = [self.caption("ACCOUNT"), login,
+                self.row("utilities-terminal-symbolic", "Log in in a terminal…", lambda: a.acc(["login", name], HOME))]
         if name != "main":
-            rm = row("user-trash-symbolic", "Remove account…", lambda: a.remove_account(name),
-                     f"Logs out and deletes {cmd}; shared history stays", "red")
+            rm = self.row("user-trash-symbolic", "Remove account…", lambda: a.remove_account(name), tone="red")
             rm.set_sensitive(a.login is None)
-            acct.pack_start(rm, False, False, 0)
-        if (columns or self.columns) == 2:
-            body = Gtk.Box(spacing=12, homogeneous=True)
-            body.pack_start(vbox(actions, acct), True, True, 0)
-            body.pack_start(vbox(self.places(name, now)), True, True, 0)
-        else:
-            body = vbox(actions, self.places(name, now), acct)
-        return head, body
+            rows.append(rm)
+        cards.append(self.card(*rows, rows=True))
+        return vbox(*cards, spacing=self.SPACE)
 
-    def places(self, name, now):
-        """Pinned sessions and projects, recent projects, recent sessions. Sessions are shared by all
-        accounts, so any of them continues here with this account."""
-        a, s = self.app, self.app.snap
+    def menu_projects(self, name):
+        """Pinned sessions and projects, three recent projects, the recent sessions. Sessions are shared
+        by all accounts, so any of them continues here with this account."""
+        a, s, now = self.app, self.app.snap, time.time()
+        if name not in s["names"]:
+            return None
         pins = a.settings
+        pin_icon = "view-pin-symbolic" if Gtk.IconTheme.get_default().has_icon("view-pin-symbolic") else "starred-symbolic"
         running = {r["id"] for r in s["running"]}  # an open session can't be deleted
         fresh = {x["id"]: x for x in s["sessions"]}
         pinned_s = [fresh.get(x["id"], x) for x in pins["pinned_sessions"] if os.path.isdir(x.get("cwd", ""))]
         pinned_p = [p for p in pins["pinned"] if os.path.isdir(p)]
-        box = card(spacing=2)
 
-        def line(icon_name, title, sub, cb, pin_key, item, on, delete=None):
-            r = Gtk.Box(spacing=2)
-            r.pack_start(row(icon_name, title, cb, sub), True, True, 0)
-            if delete:
-                r.pack_end(tool("user-trash-symbolic", delete, "Delete this session", "ct-dim"), False, False, 0)
-            r.pack_end(tool("view-pin-symbolic" if Gtk.IconTheme.get_default().has_icon("view-pin-symbolic")
-                            else "starred-symbolic", lambda: a.toggle_pin(pin_key, item),
-                            "Unpin" if on else "Pin to the top", "ct-pin", *(("ct-on", "ct-amber") if on else ())),
-                       False, False, 0)
-            box.pack_start(r, False, False, 0)
+        def line(icon_name, title, sub, cb, key, item, on, delete=None):
+            end = [tool("user-trash-symbolic", delete, "Delete this session", "ct-trash", "ct-red")] if delete else []
+            end.append(tool(pin_icon, lambda: a.toggle_pin(key, item), "Unpin" if on else "Pin: keep at the top",
+                            "ct-pin", "ct-amber" if on else None))
+            return self.row(icon_name, title, cb, sub, end=end)
 
         def session(x, on):
-            line("chat-symbolic", x["title"], short(x["cwd"]) + (f" · {ago(x['at'], now)}" if x.get("at") else ""),
-                 lambda: a.open(name, x["cwd"], ["--resume", x["id"]]), "pinned_sessions",
-                 {k: x[k] for k in ("id", "cwd", "title")}, on,
-                 None if x["id"] in running else lambda: a.delete_session(x))
+            return line("chat-symbolic", x["title"], short(x["cwd"]) + (f" · {ago(x['at'], now)}" if x.get("at") else ""),
+                        lambda: a.open(name, x["cwd"], ["--resume", x["id"]]), "pinned_sessions",
+                        {k: x[k] for k in ("id", "cwd", "title")}, on,
+                        None if x["id"] in running else lambda: a.delete_session(x))
 
         def project(p, on):
-            line("folder-symbolic", os.path.basename(p) or p, short(os.path.dirname(p)) or "/",
-                 lambda: a.open(name, p), "pinned", p, on)
+            return line("folder-symbolic", os.path.basename(p) or p, short(os.path.dirname(p)) or "/",
+                        lambda: a.open(name, p), "pinned", p, on)
 
+        cards = []
         if pinned_s or pinned_p:
-            box.pack_start(caption("PINNED"), False, False, 4)
-            for x in pinned_s:
-                session(x, True)
-            for p in pinned_p:
-                project(p, True)
+            cards.append(self.card(self.caption("PINNED"), *(session(x, True) for x in pinned_s),
+                                   *(project(p, True) for p in pinned_p), rows=True))
         projects = [f for f in s["folders"] if f != HOME and f not in pinned_p][:3]
         if projects:
-            box.pack_start(caption("RECENT PROJECTS"), False, False, 4)
-            for p in projects:
-                project(p, False)
+            cards.append(self.card(self.caption("RECENT PROJECTS"), *(project(p, False) for p in projects), rows=True))
         ids = {x["id"] for x in pinned_s}
         sessions = [x for x in s["sessions"] if x["id"] not in ids]
         if sessions:
-            box.pack_start(caption("RECENT SESSIONS", "resume with this account"), False, False, 4)
-            for x in sessions:
-                session(x, False)
-        if not box.get_children():
-            box.pack_start(lbl("No sessions yet.", "ct-small", "ct-dim"), False, False, 0)
-        return box
+            cards.append(self.card(self.caption("RECENT SESSIONS"), *(session(x, False) for x in sessions), rows=True))
+        return vbox(*cards, spacing=self.SPACE) if cards else None
 
-    # settings
+    def menu_extras(self):
+        """The installed plugins and skills, the same for every account. A click opens its folder."""
+        s, a = self.app.snap, self.app
+        cards = []
+        if s["plugins"]:
+            rows = []
+            for x in s["plugins"]:
+                r = self.row("application-x-addon-symbolic", x["name"], lambda p=x["path"]: a.xdg_open(p),
+                             end=[pill("on" if x["on"] else "off", "plugin-on" if x["on"] else "plugin-off")])
+                r.set_tooltip_text(" · ".join(t for t in (x["from"], x["version"]) if t))
+                rows.append(r)
+            cards.append(self.card(self.caption("PLUGINS"), *rows, rows=True))
+        if s["skills"]:
+            rows = []
+            for x in s["skills"]:
+                r = self.row("starred-symbolic", x["name"], lambda p=x["path"]: a.xdg_open(p))
+                r.set_tooltip_text(x["about"] or short(x["path"]))
+                rows.append(r)
+            cards.append(self.card(self.caption("SKILLS"), *rows, rows=True))
+        return vbox(*cards, spacing=self.SPACE) if cards else None
 
-    def settings_page(self):
+    # ----- settings, over the accounts -----
+
+    def menu_settings(self):
         a, st = self.app, self.app.settings
-        head = self.header("Settings")
-        panel = card(caption("PANEL SHOWS"), spacing=6)
-        group = None
-        for key, text in (("session", "5-hour %"), ("both", "5-hour and weekly %"), ("none", "Only the ring")):
-            r = Gtk.RadioButton.new_with_label_from_widget(group, text)
+        self.kind = "inner"  # cards on one pane of glass
+
+        def choice(b, text, sub):
+            b.add(pad(two_lines(text, sub), 8, 12, 8, 6))
+            return styled(b, "ct-item")
+
+        def check(text, sub, on, cb):
+            b = choice(Gtk.CheckButton(), text, sub)
+            b.set_active(bool(on))
+            b.connect("toggled", lambda w: cb(w.get_active()))
+            return b
+
+        group, radios = None, []
+        for key, text, sub in (("session", "5-hour %", "main 92%"), ("both", "5-hour and weekly %", "main 92% · 43%"),
+                               ("none", "Ring only", "Just the coloured ring")):
+            r = choice(Gtk.RadioButton.new_from_widget(group), text, sub)
             group = group or r
             r.set_active(st["label"] == key)
             r.connect("toggled", lambda b, k=key: b.get_active() and a.set_setting("label", k))
-            panel.pack_start(r, False, False, 0)
-        for key, text, sub in (("label_account", "Account name", "When you have more than one"),
-                               ("label_reset", "Time to the 5-hour reset", None),
-                               ("label_cost", "Today's cost", "At API prices, all accounts")):
-            panel.pack_start(self.switch(text, sub, st[key], lambda v, k=key: a.set_setting(k, v)), False, False, 0)
+            radios.append(r)
+
+        def setting(key, text, sub):
+            return check(text, sub, st[key], lambda v: a.set_setting(key, v))
+        also = [self.caption("ALSO SHOW"), setting("label_account", "Account name", "When you have several accounts"),
+                setting("label_reset", "Reset countdown", "Time until the 5-hour limit resets"),
+                setting("label_cost", "Today's cost", "API-equivalent, all accounts")]
         if not a.icon.shows_text():
-            panel.pack_start(lbl("This panel shows icons only, so only the ring is shown.", "ct-small", "ct-amber",
-                                 wrap=True), False, False, 0)
-        general = card(caption("GENERAL"), spacing=6)
-        for key, text, sub in (("alerts", "Usage alerts", "At 80% and 95%, and when a full limit resets"),
-                               ("api", "Check usage when idle", "Asks Anthropic's usage API every 5 minutes "
-                                       "while Claude Code isn't reporting"),
-                               ("hide_emails", "Hide email addresses", "Shows dev*@*.com instead")):
-            general.pack_start(self.switch(text, sub, st[key], lambda v, k=key: a.set_setting(k, v)), False, False, 0)
-        general.pack_start(self.switch("Start at login", "Puts the icon in the panel when you log in",
-                                       os.path.exists(AUTOSTART), a.set_autostart), False, False, 0)
-        about = card(caption("ABOUT"), spacing=4)
-        about.pack_start(lbl(f"claude-accounts {VERSION}", "ct-small"), False, False, 0)
-        about.pack_start(row("text-html-symbolic", "Project page", lambda: a.xdg_open(REPO), REPO.split("//")[1]),
-                         False, False, 0)
-        about.pack_start(row("text-x-generic-symbolic", "Show the log", lambda: a.xdg_open(os.path.join(CACHE, "tray.log")),
-                             short(os.path.join(CACHE, "tray.log"))), False, False, 0)
-        return head, vbox(panel, general, about)
-
-    def switch(self, title, sub, on, cb):
-        sw = Gtk.Switch(active=bool(on), valign=Gtk.Align.CENTER)
-        sw.connect("notify::active", lambda w, _p: cb(w.get_active()))
-        r = Gtk.Box(spacing=12)
-        r.pack_start(two_lines(title, sub), True, True, 0)
-        r.pack_end(sw, False, False, 0)
-        return r
-
-    # plugins and skills
-
-    def extras(self):
-        s, a = self.app.snap, self.app
-        head = self.header("Plugins and skills", "Shared by every account")
-        plugins = card(caption("PLUGINS", f"{sum(x['on'] for x in s['plugins'])} on"), spacing=2)
-        for x in s["plugins"]:
-            r = row("application-x-addon-symbolic", x["name"], lambda p=x["path"]: a.xdg_open(p),
-                    " · ".join(t for t in (x["from"], x["version"]) if t))
-            r.get_child().pack_end(pill("on" if x["on"] else "off", "green" if x["on"] else "grey"), False, False, 0)
-            plugins.pack_start(r, False, False, 0)
-        if not s["plugins"]:
-            plugins.pack_start(lbl("None installed. In Claude Code: /plugin", "ct-small", "ct-dim"), False, False, 0)
-        skills = card(caption("YOUR SKILLS"), spacing=2)
-        for x in s["skills"]:
-            skills.pack_start(row("starred-symbolic", x["name"], lambda p=x["path"]: a.xdg_open(p),
-                                  x["about"] or short(x["path"])), False, False, 0)
-        if not s["skills"]:
-            skills.pack_start(lbl("None yet. Add a folder with a SKILL.md to ~/.claude/skills.", "ct-small", "ct-dim",
-                                  wrap=True), False, False, 0)
-        return head, vbox(plugins, skills)
+            also.append(pad(lbl("This panel shows icons only, so only the ring is shown.", "ct-small", "ct-amber", wrap=True),
+                            4, 16, 8, 32))
+        cards = [self.card(self.caption("PANEL SHOWS"), *radios, rows=True),
+                 self.card(*also, rows=True),
+                 self.card(self.caption("NOTIFICATIONS"),
+                           setting("alerts", "Usage alerts", "At 80% and 95%, and when a full limit resets"), rows=True),
+                 self.card(self.caption("PRIVACY AND DATA"),
+                           setting("hide_emails", "Hide emails", "Show dev*@*.com instead of the address"),
+                           setting("api", "Check usage via API when idle", "Every 5 min while Claude Code isn't running"),
+                           rows=True),
+                 self.card(self.caption("STARTUP"),
+                           check("Start at login", "Puts the icon in the panel when you log in",
+                                 os.path.exists(AUTOSTART), a.set_autostart), rows=True),
+                 self.card(self.caption(f"ABOUT · claude-accounts {VERSION}"),
+                           self.row("text-html-symbolic", "Project page", lambda: a.xdg_open(REPO), REPO.split("//")[1]),
+                           self.row("text-x-generic-symbolic", "Show the log",
+                                    lambda: a.xdg_open(os.path.join(CACHE, "tray.log")), short(os.path.join(CACHE, "tray.log"))),
+                           rows=True)]
+        pane = pad(vbox(*cards, spacing=self.SPACE), 10, 10, 10, 10)
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        panel.pack_start(pane, False, False, 0)
+        panel.glass = "panel"
+        self.tiles.append(panel)
+        return panel
 
 
 # ---------- app ----------
