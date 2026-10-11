@@ -45,14 +45,15 @@ The ring shows the 5-hour usage of the account you used last: green, then amber 
 - **Best account now:** the one with the most room left. Click it to continue your last session on it.
 - **Running sessions:** open Claude Code sessions and the account each one uses.
 
-<img src="docs/dashboard-account.png" width="420" align="right" alt="An account's page: continue the last session, start one in a folder, recent projects and sessions with pins">
+Point at or click an account and its menu opens beside the dashboard:
 
-Click an account to:
 - continue the last session or start one in any folder
 - resume any recent session with that account (pin the ones you use most)
 - log the account in again or remove it
 
-Below them: add an account, refresh, open the usage page, and the settings:
+<p align="center"><img src="docs/dashboard-account.png" width="760" alt="An account's menu beside the dashboard: continue the last session, start one in a folder, recent projects and sessions with pins"></p>
+
+Under the cards on the right: add an account, refresh, open the usage page, and the settings:
 - what the panel text shows
 - usage alerts at 80% and 95%
 - hiding email addresses
@@ -61,8 +62,6 @@ Below them: add an account, refresh, open the usage page, and the settings:
 Plugins and skills lists what is installed. Everything there is shared by every account.
 
 The icon works with Cinnamon, MATE and Xfce through XApp; KDE, GNOME with the AppIndicator extension and others through an AppIndicator; and any other X11 panel through the classic tray. On Wayland it runs through XWayland.
-
-<br clear="right">
 
 ### The status line
 
