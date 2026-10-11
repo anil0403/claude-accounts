@@ -23,7 +23,7 @@ SHARED_DIRS=(
   skills agents commands plugins output-styles hooks
   paste-cache uploads shell-snapshots session-env downloads chrome cache
 )
-SHARED_FILES=(history.jsonl settings.json settings.local.json statusline.sh CLAUDE.md)
+SHARED_FILES=(history.jsonl settings.json settings.local.json keybindings.json statusline.sh CLAUDE.md)
 
 # Keys copied from main's .claude.json into a new account are everything except the login and
 # caches that belong to main's subscription (they are re-fetched for the new account).
