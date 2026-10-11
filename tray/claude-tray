@@ -1035,7 +1035,7 @@ class Dashboard(Gtk.Window):
         u, ident = a.snap["use"].get(name), a.ids.get(name)
         used = last_used(u)
         dim = not u or now - u.get("updated", 0) > STALE
-        logged_out = ident is not None and "error" in ident
+        logged_out = (ident or {}).get("error") == "not logged in"  # not a check that failed
         top = Gtk.Box(spacing=8)
         top.pack_start(lbl(name, "ct-title"), False, False, 0)
         if (ident or {}).get("plan"):
@@ -1391,7 +1391,13 @@ class App(Gtk.Application):
 
         def done(ids):
             self.fetching_ids = False
-            self.ids, self.ids_for, self.ids_time = ids, tuple(names), time.time()
+            # A check that failed (it timed out, or said nothing readable) is no answer: keep what was
+            # known, and ask again in a minute rather than in half an hour.
+            failed = [n for n, i in ids.items() if "error" in i and i["error"] != "not logged in"]
+            for n in failed:
+                ids[n] = self.ids.get(n) or ids[n]
+            self.ids, self.ids_for = ids, tuple(names)
+            self.ids_time = time.time() - (1800 - 60 if failed else 0)
             self.changed()
         self.background(lambda: {n: identity(n) for n in names}, done)
 
@@ -1660,7 +1666,16 @@ class App(Gtk.Application):
         d.destroy()
 
 
+# Set by a Claude Code session for what runs inside it. Started from one (an install run there), the
+# tray would hand them to every session it opens, which Claude Code then refuses as nested.
+SESSION_VARS = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
+                "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
+                "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_AGENT", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_JOB_DIR")
+
+
 def main():
+    for k in SESSION_VARS:
+        os.environ.pop(k, None)
     show = "--background" not in sys.argv[1:]
     if not sys.stderr.isatty():  # started from the menu or at login: keep errors and crashes
         os.makedirs(CACHE, exist_ok=True)
