@@ -144,6 +144,7 @@ login_masked() {  # $1 = name, rest = extra `claude auth login` args
   as "$name" auth login "$@" < "$tmp/in" > "$tmp/out" 2>&1 &
   pid=$!
   exec 3> "$tmp/in"
+  # shellcheck disable=SC2064  # expand now: $pid and $tmp are locals, gone when the signal comes
   trap "kill $pid 2>/dev/null; rm -rf '$tmp'; echo; exit 130" INT
   for i in $(seq 150); do grep -q 'Paste code' "$tmp/out" && break; kill -0 $pid 2>/dev/null || break; sleep 0.2; done
   sed 's/Paste code here if prompted > .*//' "$tmp/out"
@@ -393,7 +394,7 @@ cmd_share() {
 cmd_list() {
   local now names n tmp
   now=$(date +%s)
-  names=(main $(accounts))
+  mapfile -t names < <(echo main; accounts)
   tmp=$(mktemp -d); trap 'rm -rf "$tmp"' RETURN
   for n in "${names[@]}"; do status_json "$n" > "$tmp/$n" & done   # in parallel: each call takes ~1s
   wait
