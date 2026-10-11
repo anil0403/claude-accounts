@@ -74,8 +74,12 @@ echo '{"plugins":{"code-review@official":[{"version":"1.4.0","installPath":"/tmp
 echo '{"enabledPlugins":{"code-review@official":true}}' >"$C/settings.json"
 printf -- '---\ndescription: Draft release notes from the merged pull requests\n---\n' >"$C/skills/release-notes/SKILL.md"
 
-GDK_SCALE=${GDK_SCALE:-1} dbus-run-session -- env CLAUDE_TRAY_CHILD=1 python3 "$repo/tray/claude-tray" 2>"$real_cache/claude-tray-demo.log" &
+# killing dbus-run-session would leave the tray running, so note the tray's own pid
+dbus-run-session -- bash -c 'echo $$ >"$HOME/tray.pid"; exec env CLAUDE_TRAY_CHILD=1 python3 "$0"' \
+  "$repo/tray/claude-tray" 2>"$real_cache/claude-tray-demo.log" &
 pids+=("$!")
+for _ in $(seq 20); do [ -s "$HOME/tray.pid" ] && break; sleep 0.1; done
+pids+=("$(cat "$HOME/tray.pid")")
 if [ "${1:-}" = --shot ]; then
   out=$(realpath -m "${2:?usage: tests/demo.sh --shot file.png}")
   for _ in $(seq 50); do w=$(xdotool search --onlyvisible --name '^Claude Accounts$' 2>/dev/null | tail -1) && [ -n "$w" ] && break; sleep 0.2; done
