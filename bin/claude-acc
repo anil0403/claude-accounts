@@ -48,6 +48,7 @@ claude-acc: several Claude Code accounts on one machine, one shared history.
                              and account; --auto runs it at every session start
   claude-acc rm <name> [--yes]
                              log out and remove an account (shared history is kept)
+  claude-acc doctor          check the setup and say what to fix
   claude-acc version
 
 Plain `claude` is the account "main". History, sessions, settings, skills, plugins and memory are
@@ -415,6 +416,50 @@ cmd_list() {
   [ -d "$USAGE" ] || echo "  (usage column fills in once the status line is installed)"
 }
 
+cmd_doctor() {
+  local bad=0 n item dir cmd file G="" R="" Y="" Z=""
+  [ -t 1 ] && G=$'\e[32m' R=$'\e[31m' Y=$'\e[33m' Z=$'\e[0m'
+  ok()   { echo "  ${G}✓${Z} $*"; }
+  fail() { echo "  ${R}✗${Z} $*"; bad=1; }
+  hint() { echo "  ${Y}!${Z} $*"; }
+
+  ok "Claude Code: $("$CLAUDE_BIN" --version 2>/dev/null | head -1) ($CLAUDE_BIN)"
+  ok "jq: $(jq --version)"
+  case ":$PATH:" in
+    *":$BIN:"*) ok "$BIN is on PATH" ;;
+    *) fail "$BIN is not on PATH: account commands (claude-<name>) won't be found" ;;
+  esac
+  for n in $(accounts); do
+    dir="$ROOT/$n"
+    for item in "${SHARED_DIRS[@]}" "${SHARED_FILES[@]}"; do
+      [ -e "$MAIN/$item" ] || continue
+      if [ ! -L "$dir/$item" ] || [ "$(realpath "$dir/$item" 2>/dev/null)" != "$(realpath "$MAIN/$item")" ]; then
+        fail "$n: $item is not linked to ~/.claude/$item (run: claude-acc sync)"; continue 2
+      fi
+    done
+    if [ -x "$BIN/claude-$n" ]; then ok "account $n: shared files linked, command claude-$n"
+    else fail "account $n: command $BIN/claude-$n is missing (run: claude-acc sync)"; fi
+  done
+  [ -n "$(accounts)" ] || hint "no extra accounts yet (add one: claude-acc add <name>)"
+  cmd=$(jq -r '.statusLine.command // empty' "$MAIN/settings.json" 2>/dev/null || true)
+  file=${cmd/#\~/$HOME}; file=${file%% *}
+  if [ -z "$cmd" ]; then
+    hint "no status line: the tray gets usage from the API only (re-run the installer to add it)"
+  elif [ -f "$file" ] && grep -q 'claude-accounts/.usage' "$file"; then
+    ok "status line records usage ($cmd)"
+  else
+    hint "status line '$cmd' doesn't record usage for the tray and 'claude-acc list'"
+  fi
+  if grep -qF 'claude-acc" share' "$MAIN/settings.json" 2>/dev/null; then ok "skills/plugins are shared at every session start"
+  else hint "auto-share is off (turn on: claude-acc share --auto)"; fi
+  if command -v claude-tray >/dev/null; then
+    if pgrep -f 'claude-tray' >/dev/null; then ok "tray is running"; else hint "tray is installed but not running (start: claude-tray &)"; fi
+  else
+    hint "tray is not installed"
+  fi
+  return $bad
+}
+
 cmd_run() {
   local name=${1:-}
   [ "$name" = main ] || exists "$name" || die "no account '$name'"
@@ -463,5 +508,6 @@ case ${1:-list} in
   sync)       cmd_sync ;;
   share)      shift; cmd_share "$@" ;;
   rm|remove)  shift; cmd_rm "$@" ;;
+  doctor)     cmd_doctor ;;
   *) die "unknown command '$1' (try: claude-acc help)" ;;
 esac
