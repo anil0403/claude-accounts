@@ -135,6 +135,10 @@ def plan_tone(plan):
     return "purple" if plan.lower() in ("max", "team", "enterprise") else "blue" if plan.lower() == "pro" else "grey"
 
 
+def plural(n, word):
+    return f"{n} {word}{'s' * (n != 1)}"
+
+
 def esc(s):
     return GLib.markup_escape_text(str(s))
 
@@ -726,7 +730,7 @@ class Dashboard(Gtk.Window):
     def home(self):
         a, s, now = self.app, self.app.snap, time.time()
         names = s["names"]
-        head = self.header("Claude Accounts", f"{len(names)} account{'s' * (len(names) != 1)}", back=False, tools=(
+        head = self.header("Claude Accounts", plural(len(names), "account"), back=False, tools=(
             tool("emblem-system-symbolic", lambda: self.go(("settings",)), "Settings"),
             tool("view-refresh-symbolic", a.refresh_now, "Refresh now")))
         left = vbox(*(self.account_card(n, now) for n in names))
@@ -749,7 +753,7 @@ class Dashboard(Gtk.Window):
         right.pack_start(card(
             row("list-add-symbolic", "Add account…", a.add_account, "Log in to another Claude account"),
             row("application-x-addon-symbolic", "Plugins and skills",
-                lambda: self.go(("extras",)), f"{len(s['plugins'])} plugins, {len(s['skills'])} skills, shared by all accounts"),
+                lambda: self.go(("extras",)), f"{plural(len(s['plugins']), 'plugin')}, {plural(len(s['skills']), 'skill')}, shared by all accounts"),
             row("web-browser-symbolic", "Usage on claude.ai", lambda: a.xdg_open(USAGE_PAGE)),
             row("system-shutdown-symbolic", "Quit", a.quit, tone="red"), spacing=2), False, False, 0)
         if self.columns == 2:
