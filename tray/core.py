@@ -165,7 +165,7 @@ def fetch_api(name):
         return None, "no login token", 0, None
     req = urllib.request.Request(USAGE_API, headers={
         "Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20",
-        "Accept": "application/json", "User-Agent": "claude-tray/0.2"})
+        "Accept": "application/json", "User-Agent": "claude-accounts-tray/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             j = json.load(r)
@@ -445,8 +445,7 @@ def recent_sessions(limit=30):
 
 
 def installed_plugins():
-    """Claude Code's installed plugins, the favourites first: name, marketplace, version, folder."""
-    first = ["ponytail", "impeccable", "claude-memory", "claude-seo"]
+    """Claude Code's installed plugins, enabled ones first: name, marketplace, version, folder."""
     try:
         with open(os.path.join(MAIN, "plugins", "installed_plugins.json")) as f:
             plugins = json.load(f)["plugins"]
@@ -460,7 +459,7 @@ def installed_plugins():
             name, _, market = key.partition("@")
             out.append({"name": name, "from": market, "version": str(installs[0].get("version") or "")[:12],
                         "path": installs[0].get("installPath") or "", "on": bool(enabled.get(key))})
-    return sorted(out, key=lambda x: first.index(x["name"]) if x["name"] in first else len(first))
+    return sorted(out, key=lambda x: (not x["on"], x["name"]))
 
 
 def installed_skills():
