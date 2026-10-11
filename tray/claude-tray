@@ -1057,7 +1057,7 @@ class Dashboard(Gtk.Window):
                 session(x, True)
             for p in pinned_p:
                 project(p, True)
-        projects = [f for f in s["folders"] if f != HOME and f not in pinned_p][:5]
+        projects = [f for f in s["folders"] if f != HOME and f not in pinned_p][:3]
         if projects:
             box.pack_start(caption("RECENT PROJECTS"), False, False, 4)
             for p in projects:
