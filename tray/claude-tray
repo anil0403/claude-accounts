@@ -96,26 +96,30 @@ MODEL_TONES = {"Opus": "amber", "Sonnet": "blue", "Haiku": "green", "Fable": "pu
 CSS = """
 window.ct-window { background-color: transparent; }
 .ct-panel { background-color: @ct_bg; color: @ct_fg; border-radius: 14px; margin: 8px;
+            background-image: linear-gradient(to bottom, alpha(white, 0.06), alpha(white, 0) 35%);
             border: 1px solid alpha(@ct_fg, 0.14); box-shadow: 0 4px 12px alpha(black, 0.35); }
 .ct-panel.ct-square { border-radius: 0; margin: 0; box-shadow: none; }
+.ct-panel label { font-size: 13.5pt; }
 .ct-head { padding: 12px 12px 8px 16px; }
 .ct-body { padding: 0 12px 12px 12px; }
-.ct-card { background-color: alpha(@ct_fg, 0.05); border-radius: 12px; padding: 14px;
-           border: 1px solid alpha(@ct_fg, 0.07); }
-button.ct-card { background-image: none; box-shadow: none; text-shadow: none; }
-button.ct-card:hover { background-color: alpha(@ct_fg, 0.1); }
+.ct-body.ct-top { padding-top: 12px; }
+/* cards: lighter, raised tiles on the panel */
+.ct-card { background-color: @ct_tile; border-radius: 12px; padding: 16px 18px;
+           background-image: linear-gradient(to bottom, alpha(white, 0.09), alpha(white, 0) 160px);
+           border: 1px solid @ct_edge; box-shadow: 0 6px 14px alpha(black, 0.2); }
+button.ct-card { text-shadow: none; }
+button.ct-card:hover { background-color: @ct_tile_hover; }
 button.ct-row { padding: 6px 8px; border-radius: 8px; border: none; background-image: none; box-shadow: none; }
 button.ct-row:hover { background-color: alpha(@ct_fg, 0.08); }
 button.ct-tool { padding: 5px; border-radius: 8px; min-width: 0; min-height: 0; }
-.ct-title { font-weight: bold; font-size: larger; }
-.ct-app { font-weight: bold; font-size: larger; }
-.ct-small { font-size: smaller; }
-.ct-dim { opacity: 0.72; }
-.ct-caption { font-size: smaller; font-weight: bold; opacity: 0.7; }
-.ct-pct { font-weight: bold; }
-.ct-big { font-weight: bold; font-size: x-large; }
-.ct-pill { border-radius: 99px; padding: 1px 9px; font-size: smaller; font-weight: bold; }
-.ct-icon { border-radius: 7px; padding: 5px; background-color: alpha(@ct_fg, 0.1); }
+.ct-panel .ct-title, .ct-panel .ct-app { font-weight: bold; font-size: 15.5pt; }
+.ct-panel .ct-small { font-size: 12.5pt; }
+.ct-dim { opacity: 0.8; }
+.ct-panel .ct-caption { font-size: 11pt; font-weight: bold; opacity: 0.8; }
+.ct-panel .ct-pct { font-weight: bold; font-size: 14.5pt; }
+.ct-panel .ct-big { font-weight: bold; font-size: 23pt; }
+.ct-panel .ct-pill { border-radius: 99px; padding: 2px 10px; font-size: 11pt; font-weight: bold; }
+.ct-icon { border-radius: 7px; padding: 6px; background-color: alpha(@ct_fg, 0.14); }
 .ct-banner { border-radius: 10px; padding: 9px 12px; }
 .ct-code { font-family: monospace; border-radius: 6px; padding: 2px 8px; background-color: alpha(@ct_fg, 0.1); }
 .ct-pin { opacity: 0.35; }
@@ -160,7 +164,10 @@ def install_css():
 
     def rgb(c):
         return f"rgb({int(c.red * 255)},{int(c.green * 255)},{int(c.blue * 255)})"
-    css = f"@define-color ct_bg {rgb(bg)};\n@define-color ct_fg {rgb(fg)};\n" + CSS
+    tile = ("alpha(white, 0.07)", "alpha(white, 0.12)", "alpha(white, 0.16)") if dark else \
+        ("alpha(white, 0.7)", "alpha(white, 0.95)", "alpha(black, 0.1)")
+    css = (f"@define-color ct_bg {rgb(bg)};\n@define-color ct_fg {rgb(fg)};\n@define-color ct_tile {tile[0]};\n"
+           f"@define-color ct_tile_hover {tile[1]};\n@define-color ct_edge {tile[2]};\n" + CSS)
     text = TEXT_ON_DARK if dark else TEXT_ON_LIGHT
     for t, base in TONES.items():
         css += (f".ct-{t} {{ color: {text[t]}; }}\n"
@@ -313,39 +320,40 @@ def caption(text, note=None):
 
 
 class Meter(Gtk.Box):
-    """One usage window: caption and time to the reset, a bar with a pace tick, the %."""
+    """One usage window: caption and time to the reset, a bar with a pace tick, the % under it."""
 
     def __init__(self, caption_text, w, length, now, dim):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=9)
         self.w, self.dim, self.pace = w, dim, pace(w, length, now)
         top = Gtk.Box(spacing=8)
         top.pack_start(lbl(caption_text, "ct-caption"), False, False, 0)
-        top.pack_start(lbl(f"{w['pct']}%", "ct-pct", None if dim else f"ct-{tone_for(w['pct'])}"), False, False, 0)
-        when = f"resets in {dur(w['resets'] - now)}" if w["resets"] else "reset time unknown"
+        when = f"Resets in {dur(w['resets'] - now)}" if w["resets"] else "Reset time unknown"
         top.pack_end(lbl(when, "ct-small", "ct-dim", xalign=1), False, False, 0)
         self.pack_start(top, False, False, 0)
         bar = Gtk.DrawingArea()
-        bar.set_size_request(-1, 10)
+        bar.set_size_request(-1, 12)
         bar.connect("draw", self.draw)
         if self.pace is not None:
             diff = w["pct"] - self.pace
             bar.set_tooltip_text(f"{round(diff)}% over pace: at this rate you hit the limit early" if diff > 5 else
                                  "Under pace" if diff < -5 else "On pace")
         self.pack_start(bar, False, False, 0)
+        self.pack_start(lbl(f"{w['pct']}%", "ct-pct", None if dim else f"ct-{tone_for(w['pct'])}", xalign=1),
+                        False, False, 0)
 
     def draw(self, widget, cr):
         width, h = widget.get_allocated_width(), widget.get_allocated_height()
         fg = widget.get_style_context().get_color(Gtk.StateFlags.NORMAL)
-        y, bh = (h - 6) / 2, 6
-        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.15)
-        rounded(cr, 0, y, width, bh, 3)
+        y, bh = (h - 8) / 2, 8
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.16)
+        rounded(cr, 0, y, width, bh, 4)
         cr.fill()
         if self.w["pct"] > 0:
             cr.set_source_rgb(*hex_rgb(GREY if self.dim else TONES[tone_for(self.w["pct"])]))
-            rounded(cr, 0, y, max(6, width * self.w["pct"] / 100), bh, 3)
+            rounded(cr, 0, y, max(8, width * self.w["pct"] / 100), bh, 4)
             cr.fill()
         if self.pace is not None:
-            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.85)
+            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.9)
             rounded(cr, width * self.pace / 100 - 1, 0, 2, h, 1)
             cr.fill()
         return False
@@ -619,19 +627,18 @@ class Dashboard(Gtk.Window):
 
     def popup(self, anchor=None, t=0):
         """Open on the home page next to the panel icon (or the pointer), sized to fit the screen:
-        one column, or two when one would need scrolling and the screen is wide enough."""
+        two columns, or one where the screen is too narrow for two."""
         self.anchor = anchor or pointer_anchor()
         wa = Gdk.Display.get_default().get_monitor_at_point(*self.anchor[:2]).get_workarea()
         ctx = self.get_pango_context()
         cw = ctx.get_metrics(ctx.get_font_description(), None).get_approximate_char_width() / Pango.SCALE
-        one = int(min(max(44 * cw, 380), wa.width - 2 * self.MARGIN))
-        self.page, self.columns = ("home",), 1
+        one = max(48 * cw, 420)
+        maxw = wa.width - 2 * self.MARGIN
+        self.page, self.columns = ("home",), 2 if maxw >= 2 * one else 1  # side by side, as the old menu
         self.render(force=True)
         maxh = wa.height - 2 * self.MARGIN
-        w = one
-        if self.height(one) > maxh and wa.width - 2 * self.MARGIN >= 2 * one:
-            self.columns, w = 2, 2 * one
-            self.render(force=True)
+        self.panel.show_all()
+        w = int(min(max(self.columns * one, self.panel.get_preferred_width()[1]), maxw))
         h = min(self.height(w), maxh)
         for sc in self.scrollers():
             sc.set_max_content_height(maxh)
@@ -695,7 +702,7 @@ class Dashboard(Gtk.Window):
         if old is not None and hasattr(old, "scroller"):
             sc.set_max_content_height(old.scroller.get_max_content_height())
         sc.add(styled(body, "ct-body"))
-        page = vbox(styled(head, "ct-head"), spacing=0)
+        page = vbox(head and styled(head, "ct-head"), spacing=0)
         page.pack_start(sc, True, True, 0)
         page.scroller, page.page = sc, self.page
         self.count += 1
@@ -725,14 +732,12 @@ class Dashboard(Gtk.Window):
             h.pack_end(t, False, False, 0)
         return h
 
-    # home: accounts, today, best account, running sessions, actions
+    # home, laid out like the panel menu it replaced: accounts on the left; today, the best account,
+    # running sessions and the actions on the right
 
     def home(self):
         a, s, now = self.app, self.app.snap, time.time()
         names = s["names"]
-        head = self.header("Claude Accounts", plural(len(names), "account"), back=False, tools=(
-            tool("emblem-system-symbolic", lambda: self.go(("settings",)), "Settings"),
-            tool("view-refresh-symbolic", a.refresh_now, "Refresh now")))
         left = vbox(*(self.account_card(n, now) for n in names))
         right = vbox()
         if a.login:
@@ -752,9 +757,11 @@ class Dashboard(Gtk.Window):
         right.pack_start(self.running_card(), False, False, 0)
         right.pack_start(card(
             row("list-add-symbolic", "Add account…", a.add_account, "Log in to another Claude account"),
-            row("application-x-addon-symbolic", "Plugins and skills",
-                lambda: self.go(("extras",)), f"{plural(len(s['plugins']), 'plugin')}, {plural(len(s['skills']), 'skill')}, shared by all accounts"),
-            row("web-browser-symbolic", "Usage on claude.ai", lambda: a.xdg_open(USAGE_PAGE)),
+            row("view-refresh-symbolic", "Refresh now", a.refresh_now),
+            row("application-x-addon-symbolic", "Plugins and skills", lambda: self.go(("extras",)),
+                f"{plural(len(s['plugins']), 'plugin')}, {plural(len(s['skills']), 'skill')}, shared by all accounts"),
+            row("web-browser-symbolic", "Open usage page…", lambda: a.xdg_open(USAGE_PAGE), "claude.ai/settings/usage"),
+            row("emblem-system-symbolic", "Settings", lambda: self.go(("settings",))),
             row("system-shutdown-symbolic", "Quit", a.quit, tone="red"), spacing=2), False, False, 0)
         if self.columns == 2:
             body = Gtk.Box(spacing=12, homogeneous=True)
@@ -762,7 +769,7 @@ class Dashboard(Gtk.Window):
             body.pack_start(right, True, True, 0)
         else:
             body = vbox(left, right)
-        return head, body
+        return None, styled(body, "ct-top")
 
     def account_card(self, name, now):
         a = self.app
@@ -770,11 +777,14 @@ class Dashboard(Gtk.Window):
         used = last_used(u)
         dim = not u or now - u.get("updated", 0) > STALE
         logged_out = ident is not None and "error" in ident
+        w5 = window(u, "session", now)
+        login = a.login and a.login.name == name
+        tone = "blue" if login else "grey" if logged_out or dim or not w5 else tone_for(w5["pct"])
         top = Gtk.Box(spacing=8)
         top.pack_start(lbl(name, "ct-title"), False, False, 0)
         if (ident or {}).get("plan"):
             top.pack_start(pill(ident["plan"], plan_tone(ident["plan"])), False, False, 0)
-        if a.login and a.login.name == name:
+        if login:
             top.pack_end(pill("Logging in…", "blue"), False, False, 0)
         elif logged_out:
             top.pack_end(pill("Not logged in", "amber"), False, False, 0)
@@ -782,16 +792,21 @@ class Dashboard(Gtk.Window):
             top.pack_end(pill("Active now", "blue"), False, False, 0)
         elif used:
             top.pack_end(lbl(f"used {ago(used, now)}", "ct-small", "ct-dim"), False, False, 0)
-        head = vbox(top, spacing=2)
+        head = vbox(top, spacing=5)
         if ident and "email" in ident:
             head.pack_start(lbl(a.email(ident["email"]), "ct-small", "ct-dim"), False, False, 0)
-        box = vbox(head, spacing=12)
-        meters = [Meter(c, w, n, now, dim) for c, k, n in (("5-HOUR", "session", SESSION_LEN), ("WEEKLY", "weekly", WEEK_LEN))
+        avatar = Gtk.Image.new_from_icon_name("avatar-default-symbolic", Gtk.IconSize.LARGE_TOOLBAR)
+        avatar.set_valign(Gtk.Align.CENTER)
+        who = Gtk.Box(spacing=10)
+        who.pack_start(styled(avatar, f"ct-{tone}"), False, False, 0)  # the account's state
+        who.pack_start(head, True, True, 0)
+        box = vbox(who, spacing=18)
+        meters = [Meter(c, w, n, now, dim) for c, k, n in (("SESSION", "session", SESSION_LEN), ("WEEKLY", "weekly", WEEK_LEN))
                   if (w := window(u, k, now))]
         for m in meters:
             box.pack_start(m, False, False, 0)
         if not meters and not logged_out:
-            box.pack_start(lbl("No usage yet: open it and send a message.", "ct-small", "ct-dim"), False, False, 0)
+            box.pack_start(lbl("No usage yet. Open it and send a message.", "ct-small", "ct-dim"), False, False, 0)
         note = a.api_note(name, u, now)
         if note:
             box.pack_start(lbl(note, "ct-small", "ct-amber", wrap=True), False, False, 0)
@@ -799,29 +814,35 @@ class Dashboard(Gtk.Window):
 
     def today_card(self):
         t = self.app.today
-        if not t:
-            return card(caption("TODAY"), lbl("Reading today's sessions…", "ct-small", "ct-dim"))
         top = Gtk.Box(spacing=8)
-        top.pack_start(lbl("TODAY", "ct-caption"), True, True, 0)
+        top.pack_start(icon("utilities-system-monitor-symbolic", "ct-red"), False, False, 0)
+        top.pack_start(lbl("Today's Activity", "ct-title"), True, True, 0)
+        if not t:
+            return card(top, lbl("Reading today's sessions…", "ct-small", "ct-dim"), spacing=18)
         cost = lbl(f"${t['cost']:.2f}", "ct-big", "ct-green", xalign=1)
         cost.set_tooltip_text("What today's use would cost at API prices, all accounts")
         top.pack_end(cost, False, False, 0)
-        stats = Gtk.Box(homogeneous=True, spacing=6)
-        for v, k in ((t["turns"], "prompts"), (active_text(t["active"]), "active"), (t["lines"], "lines written")):
-            stats.pack_start(vbox(lbl(v, "ct-pct", xalign=0.5), lbl(k, "ct-small", "ct-dim", xalign=0.5), spacing=2),
-                             True, True, 0)
-        c = card(top, stats, spacing=12)
-        models = sorted(t["replies"].items(), key=lambda kv: -kv[1])
+        c = card(top, spacing=18)
+        rows = [[(t["turns"], "Prompts", "chat-symbolic"), (active_text(t["active"]), "Active", "preferences-system-time-symbolic"),
+                 (t["lines"], "Lines", "text-x-generic-symbolic")]]
+        models = sorted(t["replies"].items(), key=lambda kv: -kv[1])[:3]
         if models:
-            line = Gtk.Box(spacing=14, halign=Gtk.Align.CENTER)
-            for k, v in models:
-                line.pack_start(hbox(dot(MODEL_TONES.get(k, "grey")), lbl(f"{k} {v}", "ct-small", "ct-dim"), spacing=6),
-                                False, False, 0)
-            line.set_tooltip_text("Replies per model")
+            rows.append([(v, k, MODEL_TONES.get(k, "grey")) for k, v in models])
+        for r in rows:
+            line = Gtk.Box(homogeneous=True, spacing=8)
+            for v, k, mark in r + [("", "", None)] * (3 - len(r)):
+                cap = Gtk.Box(spacing=6, halign=Gtk.Align.CENTER)
+                if mark in TONES:
+                    cap.pack_start(dot(mark), False, False, 0)
+                elif mark:
+                    cap.pack_start(icon(mark, "ct-dim"), False, False, 0)
+                cap.pack_start(lbl(k, "ct-small", "ct-dim"), False, False, 0)
+                line.pack_start(vbox(lbl(v, "ct-pct", xalign=0.5), cap, spacing=4), True, True, 0)
             c.pack_start(line, False, False, 0)
         return c
 
     def best_card(self, name, now):
+        """The account with the most room left; a click continues the last session on it."""
         a, s = self.app, self.app.snap
         u = s["use"][name]
         w5, w7 = window(u, "session", now), window(u, "weekly", now)
@@ -832,17 +853,18 @@ class Dashboard(Gtk.Window):
         top.pack_start(lbl(f"5h {w5['pct'] if w5 else 0}% · 7d {w7['pct'] if w7 else 0}%", "ct-small", "ct-dim"), True, True, 0)
         top.pack_end(pill(f"{100 - used}% left", tone_for(used)), False, False, 0)
         folders = s["folders"]
-        if folders:
-            go = row("media-playback-start-symbolic", "Continue the last session here",
-                     lambda: a.open(name, folders[0], ["--continue"]), f"in {short(folders[0])}", tone="green")
-        else:
-            go = row("folder-open-symbolic", "Open in a folder…", lambda: a.choose_folder(name), tone="green")
-        return card(caption("MOST ROOM LEFT"), top, go)
+        go = lbl(f"▶  Continue last session in {os.path.basename(folders[0]) or folders[0]}" if folders
+                 else "▶  Open in a folder…", "ct-small", "ct-green")
+        go.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        go.set_margin_start(20)
+        box = vbox(caption("BEST ACCOUNT NOW"), top, go, spacing=12)
+        return button(box, (lambda: a.open(name, folders[0], ["--continue"])) if folders else lambda: a.choose_folder(name),
+                      "ct-card", tip=short(folders[0]) if folders else None)
 
     def running_card(self):
-        running = self.app.snap["running"]
-        c = card(caption("RUNNING NOW", None if running else "no sessions open"), spacing=8)
-        for x in running[:5]:
+        running, most = self.app.snap["running"], 3
+        c = card(caption("RUNNING SESSIONS", None if running else "none open"), spacing=12)
+        for x in running[:most]:
             r = Gtk.Box(spacing=10)
             r.pack_start(dot("green" if x["busy"] else "grey"), False, False, 0)
             r.pack_start(lbl(x["name"] or os.path.basename(x["cwd"]) or "session", "ct-small"), True, True, 0)
@@ -850,8 +872,8 @@ class Dashboard(Gtk.Window):
             r.set_tooltip_text(short(x["cwd"]) + (" (background)" if x["bg"] else "") +
                                (" · working" if x["busy"] else " · idle"))
             c.pack_start(r, False, False, 0)
-        if len(running) > 5:
-            c.pack_start(lbl(f"+ {len(running) - 5} more", "ct-caption", "ct-dim"), False, False, 0)
+        if len(running) > most:
+            c.pack_start(lbl(f"+ {len(running) - most} more", "ct-caption", "ct-dim"), False, False, 0)
         return c
 
     # one account: open Claude with it, its projects and sessions, log in, remove
@@ -885,7 +907,6 @@ class Dashboard(Gtk.Window):
                            False, False, 0)
         actions.pack_start(cmd_row, False, False, 6)
 
-        body = vbox(actions, self.places(name, now))
         acct = card(caption("ACCOUNT"), spacing=2)
         login = row("changes-prevent-symbolic", "Log in again…" if logged_in else "Log in…",
                     lambda: a.start_login(name, ident.get("email", "")), "Opens your browser",
@@ -899,7 +920,12 @@ class Dashboard(Gtk.Window):
                      f"Logs out and deletes {cmd}; shared history stays", "red")
             rm.set_sensitive(a.login is None)
             acct.pack_start(rm, False, False, 0)
-        body.pack_start(acct, False, False, 0)
+        if self.columns == 2:
+            body = Gtk.Box(spacing=12, homogeneous=True)
+            body.pack_start(vbox(actions, acct), True, True, 0)
+            body.pack_start(vbox(self.places(name, now)), True, True, 0)
+        else:
+            body = vbox(actions, self.places(name, now), acct)
         return head, body
 
     def places(self, name, now):
