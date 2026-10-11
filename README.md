@@ -48,10 +48,10 @@ The ring shows the 5-hour usage of the account you used last: green, then amber 
 Point at or click an account and its menu opens beside the dashboard:
 
 - continue the last session or start one in any folder
-- resume any recent session with that account (pin the ones you use most)
+- Recent Projects opens further out: resume any recent session with that account (pin the ones you use most)
 - log the account in again or remove it
 
-<p align="center"><img src="docs/dashboard-account.png" width="760" alt="An account's menu beside the dashboard: continue the last session, start one in a folder, recent projects and sessions with pins"></p>
+<p align="center"><img src="docs/dashboard-account.png" width="900" alt="An account's menu beside the dashboard: continue the last session, start one in a folder, recent projects and sessions with pins"></p>
 
 Under the cards on the right: add an account, refresh, open the usage page, and the settings:
 - what the panel text shows
@@ -59,7 +59,7 @@ Under the cards on the right: add an account, refresh, open the usage page, and 
 - hiding email addresses
 - starting at login
 
-Plugins and skills lists what is installed. Everything there is shared by every account.
+Plugins and Skills, in the same menu, lists what is installed. Everything there is shared by every account.
 
 The icon works with Cinnamon, MATE and Xfce through XApp; KDE, GNOME with the AppIndicator extension and others through an AppIndicator; and any other X11 panel through the classic tray. On Wayland it runs through XWayland.
 
