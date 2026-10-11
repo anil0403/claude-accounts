@@ -209,24 +209,16 @@ def grab_backdrop():
     root = Gdk.get_default_root_window()
     w, h = root.get_width(), root.get_height()
     pb = Gdk.pixbuf_get_from_window(root, 0, 0, w, h)
-    if pb:
-        for d in (4, 4 * BLUR, BLUR):  # down in two steps, then half way back up: no blocks
-            pb = pb.scale_simple(max(1, w // d), max(1, h // d), GdkPixbuf.InterpType.BILINEAR)
-    return pb
-
-
-def shadow(cr, x, y, width, height, radius):
-    """A soft drop shadow around a card, not under it (the card is see-through)."""
-    cr.save()
-    cr.rectangle(x - 40, y - 40, width + 80, height + 80)
-    rounded(cr, x, y, width, height, radius)
-    cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
-    cr.clip()
-    cr.set_source_rgba(0, 0, 0, 0.055)
-    for d in range(1, 21, 2):  # stacked, growing: darkest at the card's edge
-        rounded(cr, x - d, y - d + 6, width + 2 * d, height + 2 * d, radius + d)
-        cr.fill()
-    cr.restore()
+    if not pb:
+        return None
+    for d in (4, 4 * BLUR, BLUR):  # down in two steps, then half way back up: no blocks
+        pb = pb.scale_simple(max(1, w // d), max(1, h // d), GdkPixbuf.InterpType.BILINEAR)
+    surface = cairo.ImageSurface(cairo.FORMAT_RGB24, w, h)  # enlarged once, not on every redraw
+    cr = cairo.Context(surface)
+    cr.scale(w / pb.get_width(), h / pb.get_height())
+    Gdk.cairo_set_source_pixbuf(cr, pb, 0, 0)
+    cr.paint()
+    return surface
 
 
 def tile(cr, x, y, width, height, radius, fill):
@@ -660,7 +652,7 @@ class Dashboard(Gtk.Window):
 
     GAP = 6       # between the panel and the cards
     MARGIN = 8    # kept free at the screen edges
-    PAD = 14      # see-through room around the cards for their shadows
+    PAD = 14      # see-through room around the cards
     SIDE = 12     # between two menus
     SPACE = 10    # between two cards
     WIDTHS = {"account": 365, "projects": 555, "extras": 350}  # menus beside, for a 434px column
@@ -685,8 +677,13 @@ class Dashboard(Gtk.Window):
         self.root.set_border_width(self.PAD)
         self.root.connect("draw", self.draw_glass)
         self.root.connect_after("size-allocate", lambda *_: GLib.idle_add(self.shape))
-        self.root.show()
-        self.add(self.root)
+        # The see-through window covers the screen while open and never moves: a menu opening only
+        # moves the cards within it, so nothing jumps or flickers under the pointer.
+        self.stage = Gtk.Fixed()
+        self.stage.put(self.root, 0, 0)
+        self.stage.show_all()
+        self.add(self.stage)
+        self.wa = None
         self.levels, self.sig, self.anchor, self.columns, self.hidden_at = [], None, None, 2, 0
         self.one, self.cap, self.cap_sub, self.side, self.origin = 434, 800, 800, "left", (0, 0)
         self.backdrop = self.hot = None
@@ -709,7 +706,7 @@ class Dashboard(Gtk.Window):
         """Open the dashboard by the panel icon (or the pointer): two columns, or one where the screen
         is too narrow. Its menus open on the side with more room."""
         self.anchor = anchor or pointer_anchor()
-        wa = Gdk.Display.get_default().get_monitor_at_point(*self.anchor[:2]).get_workarea()
+        wa = self.wa = Gdk.Display.get_default().get_monitor_at_point(*self.anchor[:2]).get_workarea()
         self.backdrop = grab_backdrop() if self.round and not self.get_visible() else self.backdrop
         TINT[3] = 0.8 if self.backdrop else 1
         ctx = self.get_pango_context()
@@ -749,6 +746,13 @@ class Dashboard(Gtk.Window):
         beside = w - 2 * self.PAD - self.levels[0].view.get_preferred_width()[1]
         x, y = self.origin
         x -= self.PAD + (beside if self.side == "left" else 0)
+        if self.round:  # the window stays over the work area; the cards move in it
+            wa = self.wa
+            self.stage.move(self.root, max(0, min(x - wa.x, wa.width - w)), max(0, min(y - self.PAD - wa.y, wa.height - h)))
+            self.set_size_request(wa.width, wa.height)
+            self.resize(wa.width, wa.height)
+            self.move(wa.x, wa.y)
+            return
         self.set_size_request(w, h)
         self.resize(w, h)
         self.move(x, y - self.PAD)
@@ -770,7 +774,7 @@ class Dashboard(Gtk.Window):
 
     def draw_glass(self, w, cr):
         """The glass under the cards: the blurred screen tinted with the theme's menu colour, a lighter
-        tile with a sheen and an edge over it, a soft shadow around. Settings is one pane of it, its cards
+        tile with a sheen and an edge over it. Settings is one pane of it, its cards
         tiles on that."""
         win = self.get_window()
         if not win:
@@ -779,6 +783,8 @@ class Dashboard(Gtk.Window):
             cr.set_source_rgb(*TINT[:3])
             cr.paint()
         _, ox, oy = win.get_origin()
+        rx, ry = w.translate_coordinates(self, 0, 0)
+        ox, oy = ox + rx, oy + ry  # where this is on the screen
         boxes = []
         for lv in self.levels:
             if not lv.view.get_mapped():
@@ -791,14 +797,6 @@ class Dashboard(Gtk.Window):
                     boxes.append(((p[0], p[1], t.get_allocated_width(), t.get_allocated_height(), 12), t.glass, view))
         boxes.sort(key=lambda b: b[1] != "panel")  # a pane before the cards on it
         for box, kind, (vx, vy, vw, vh) in boxes:
-            whole = box[1] >= vy and box[1] + box[3] <= vy + vh  # not scrolled partly out of view
-            room = self.PAD if whole else 0
-            cr.save()
-            cr.rectangle(vx - self.PAD, vy - room, vw + 2 * self.PAD, vh + 2 * room)
-            cr.clip()
-            shadow(cr, *box)
-            cr.restore()
-        for box, kind, (vx, vy, vw, vh) in boxes:
             cr.save()
             cr.rectangle(vx, vy, vw, vh)
             cr.clip()
@@ -807,12 +805,8 @@ class Dashboard(Gtk.Window):
                 rounded(cr, *box)
                 cr.clip()
                 if self.backdrop:
-                    cr.save()
-                    cr.translate(-ox, -oy)
-                    cr.scale(BLUR, BLUR)
-                    Gdk.cairo_set_source_pixbuf(cr, self.backdrop, 0, 0)
+                    cr.set_source_surface(self.backdrop, -ox, -oy)
                     cr.paint()
-                    cr.restore()
                 cr.set_source_rgba(*TINT)
                 cr.paint()
                 cr.restore()
@@ -895,8 +889,10 @@ class Dashboard(Gtk.Window):
             sc = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True,
                                     propagate_natural_width=True, valign=Gtk.Align.START)
             sc.set_max_content_height(self.cap_sub if depth else self.cap)
-            if depth:
-                body.set_size_request(int(self.WIDTHS[key[0]] * self.one / 434), -1)
+            if depth:  # as wide as it was, or narrower where the screen ends: the dashboard never moves
+                width = min(int(self.WIDTHS[key[0]] * self.one / 434), self.room())
+                body.set_size_request(width, -1)
+                sc.set_max_content_width(width)
             sc.add(body)
             self.root.pack_start(sc, False, False, 0)
             if depth and self.side == "left":
@@ -905,6 +901,15 @@ class Dashboard(Gtk.Window):
             lv = Level(key, sc, sc, True, self.collect, self.tiles)
         self.levels.append(lv)
         return lv
+
+    def room(self):
+        """The width left for one more menu beside, between those open and the screen's edge."""
+        if not self.wa:
+            return 10 ** 4
+        x, wa = self.origin[0], self.wa
+        free = x - wa.x if self.side == "left" else wa.x + wa.width - x - self.levels[0].view.get_preferred_width()[1]
+        used = sum(lv.view.get_preferred_width()[1] + self.SIDE for lv in self.levels[1:] if lv.own)
+        return max(240, free - used - self.SIDE - self.MARGIN)
 
     def mark(self):
         """Keep the item whose menu is open highlighted, as a menu does while its submenu shows."""
