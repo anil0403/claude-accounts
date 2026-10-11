@@ -731,12 +731,14 @@ class Dashboard(Gtk.Window):
         self.origin = (x, y)
         self.place()
         self.realize()
-        if not t and GdkX11 and isinstance(self.get_window(), GdkX11.X11Window):
-            # Not opened by a click (launched again, or from the indicator's menu): without a recent
-            # timestamp the window manager would not focus it, and it could not close on focus loss.
+        if GdkX11 and isinstance(self.get_window(), GdkX11.X11Window):
+            # The latest time, not the click's: with an older one (the panel's own, or none when launched
+            # again) the window manager may keep it under the focused window, and it could not close on
+            # focus loss.
             t = GdkX11.x11_get_server_time(self.get_window())
         self.show()
         self.present_with_time(t or Gtk.get_current_event_time())
+        self.get_window().raise_()
 
     def place(self):
         """Size the window to what is open, keeping the dashboard itself where it opened."""
