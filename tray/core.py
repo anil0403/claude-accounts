@@ -232,7 +232,7 @@ class Stats:
 
     def reset(self, day):
         self.day, self.cost, self.turns, self.lines = day, 0.0, 0, 0
-        self.replies, self.times, self.best, self.offsets = {}, [], {}, {}
+        self.replies, self.times, self.best, self.offsets, self.tools = {}, [], {}, {}, set()
 
     def update(self):
         d = day_start()
@@ -285,7 +285,8 @@ class Stats:
             return
         mid = f"{msg.get('id', '')}:{j.get('requestId', '')}"
         for b in msg.get("content") or []:
-            if isinstance(b, dict) and b.get("type") == "tool_use":
+            if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id", mid) not in self.tools:
+                self.tools.add(b.get("id", mid))
                 inp = b.get("input") or {}
                 if b.get("name") == "Write":
                     self.lines += count_lines(inp.get("content"))

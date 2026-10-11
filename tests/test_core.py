@@ -79,7 +79,7 @@ class TodayStats(unittest.TestCase):
     def test_counts_and_dedupes(self):
         now = time.time()
         msg = {"id": "m1", "model": "claude-opus-5-5", "content": [
-            {"type": "tool_use", "name": "Write", "input": {"content": "a\nb\nc"}}],
+            {"type": "tool_use", "id": "t1", "name": "Write", "input": {"content": "a\nb\nc"}}],
             "usage": {"input_tokens": 1000, "output_tokens": 10, "cache_read_input_tokens": 0}}
         streamed = dict(msg, usage=dict(msg["usage"], output_tokens=2000))
         lines = [
@@ -92,7 +92,7 @@ class TodayStats(unittest.TestCase):
               "".join(json.dumps(x, separators=(",", ":")) + "\n" for x in lines))  # compact, as Claude Code writes
         s = core.Stats().update()
         self.assertEqual(s["turns"], 1)            # the tool result isn't a prompt
-        self.assertEqual(s["lines"], 3)
+        self.assertEqual(s["lines"], 3)            # counted once though logged twice
         self.assertEqual(s["replies"], {"Opus": 1})  # one reply, logged twice while streaming
         self.assertAlmostEqual(s["cost"], (1000 * 4 + 2000 * 20) / 1e6)  # the larger copy counts
 
