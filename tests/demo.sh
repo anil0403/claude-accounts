@@ -6,7 +6,13 @@
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 real_cache=${XDG_CACHE_HOME:-$HOME/.cache}
+real_home=$HOME
 HOME=$(mktemp -d); export HOME
+# your GTK theme and icons, so it looks as it does for you
+mkdir -p "$HOME/.config" "$HOME/.local/share"
+for d in .themes .icons .config/gtk-3.0 .local/share/themes .local/share/icons; do
+  [ -e "$real_home/$d" ] && ln -s "$real_home/$d" "$HOME/$d"
+done
 pids=()
 cleanup() { kill "${pids[@]}" 2>/dev/null || true; rm -rf "$HOME"; }
 trap cleanup EXIT
