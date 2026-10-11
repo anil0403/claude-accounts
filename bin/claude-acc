@@ -250,17 +250,17 @@ cmd_sync() {
 # promoted once (remembered in $SHARE_STATE), so removing or disabling it later sticks.
 SHARE_STATE="$ROOT/.shared"
 SHARE_LOG="$ROOT/.shared.log"
-SHARE_ROOTS=${CLAUDE_ACC_PROJECTS:-$HOME/Projects}   # colon-separated folders searched for projects
+SHARE_ROOTS=${CLAUDE_ACC_PROJECTS:-}   # optional: colon-separated folders also searched for projects
 
-share_projects() {  # every project folder with a .claude/ (one per line, $HOME excluded)
+share_projects() {  # every project Claude has opened that has a .claude/ (one per line, $HOME excluded)
   local f r
   {
     jq -r '.project // empty' "$MAIN/history.jsonl" 2>/dev/null || true
     for f in "$HOME/.claude.json" "$ROOT"/*/.claude.json; do
       [ -f "$f" ] && { jq -r '.projects // {} | keys[]' "$f" 2>/dev/null || true; }
     done
-    IFS=: read -ra r <<<"$SHARE_ROOTS"
-    for f in "${r[@]}"; do
+    r=(); [ -z "$SHARE_ROOTS" ] || IFS=: read -ra r <<<"$SHARE_ROOTS"
+    for f in ${r[@]+"${r[@]}"}; do
       [ -d "$f" ] && { find "$f" -maxdepth 5 \( -name node_modules -o -name .git -o -path '*/.claude/*' \) -prune \
         -o -type d -name .claude -print 2>/dev/null | sed 's|/\.claude$||' || true; }
     done
