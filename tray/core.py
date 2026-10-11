@@ -10,13 +10,16 @@ import urllib.error
 import urllib.request
 from datetime import date, datetime
 
+VERSION = "1.0.0"
 HOME = os.path.expanduser("~")
 MAIN = os.path.join(HOME, ".claude")
 ROOT = os.path.join(HOME, ".claude-accounts")
 USAGE = os.path.join(ROOT, ".usage")
 BIN = os.path.join(HOME, ".local", "bin")
 CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(HOME, ".cache"), "claude-tray")
-CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config"), "claude-tray")
+XDG_CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config")
+CONFIG = os.path.join(XDG_CONFIG, "claude-tray")
+AUTOSTART = os.path.join(XDG_CONFIG, "autostart", "claude-tray.desktop")
 USAGE_PAGE = "https://claude.ai/settings/usage"
 USAGE_API = "https://api.anthropic.com/api/oauth/usage"
 SESSION_LEN = 5 * 3600
@@ -613,6 +616,28 @@ def run_in_terminal(cwd, cmd, hold=False):
 
 def claude_acc():
     return shutil.which("claude-acc")
+
+
+def snapshot():
+    """Everything the dashboard shows that comes from files. Runs off the UI thread."""
+    names = accounts()
+    return {"names": names, "use": {n: usage(n) for n in names}, "folders": recent_folders(),
+            "sessions": recent_sessions(), "running": running_sessions(),
+            "plugins": installed_plugins(), "skills": installed_skills()}
+
+
+def set_autostart(on, exe):
+    """Start the tray at login (an XDG autostart entry), or stop doing so."""
+    if not on:
+        if os.path.exists(AUTOSTART):
+            os.remove(AUTOSTART)
+        return
+    os.makedirs(os.path.dirname(AUTOSTART), exist_ok=True)
+    with open(AUTOSTART, "w") as f:
+        f.write("[Desktop Entry]\nType=Application\nName=Claude Accounts\n"
+                "Comment=Claude Code usage and accounts in the panel\n"
+                f"Exec={exe} --background\nIcon=claude-accounts\nTerminal=false\n"
+                "X-GNOME-Autostart-enabled=true\n")
 
 
 # ---------- --test ----------
