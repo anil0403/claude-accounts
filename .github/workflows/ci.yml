@@ -1,0 +1,27 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq shellcheck python3-gi gir1.2-gtk-3.0
+      - name: ShellCheck
+        run: shellcheck -S warning install.sh bin/claude-acc statusline/statusline.sh tests/*.sh
+      - name: Python syntax
+        run: python3 -m py_compile tray/core.py tray/claude-tray tests/test_core.py
+      - name: Tray data tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Tray command line
+        run: |
+          python3 tray/claude-tray --version
+          python3 tray/claude-tray --help >/dev/null
+          python3 tray/claude-tray --test
+      - name: Status line speed
+        run: tests/bench.sh
+      - name: Install, use, uninstall
+        run: tests/install-test.sh
