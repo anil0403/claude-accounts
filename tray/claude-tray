@@ -108,7 +108,8 @@ window.ct-window { background-color: transparent; }
            background-image: linear-gradient(to bottom, alpha(white, 0.09), alpha(white, 0) 160px);
            border: 1px solid @ct_edge; box-shadow: 0 6px 14px alpha(black, 0.2); }
 button.ct-card { text-shadow: none; }
-button.ct-card:hover { background-color: @ct_tile_hover; }
+button.ct-card:hover, button.ct-card.ct-open { background-color: @ct_tile_hover; }
+button.ct-card.ct-open { border-color: alpha(@ct_fg, 0.35); }
 button.ct-row { padding: 6px 8px; border-radius: 8px; border: none; background-image: none; box-shadow: none; }
 button.ct-row:hover { background-color: alpha(@ct_fg, 0.08); }
 button.ct-tool { padding: 5px; border-radius: 8px; min-width: 0; min-height: 0; }
@@ -609,12 +610,21 @@ class Dashboard(Gtk.Window):
         self.stack = Gtk.Stack(vhomogeneous=False, transition_duration=160)
         self.stack.connect("notify::transition-running", self.prune)
         self.panel.pack_start(self.stack, True, True, 0)
-        self.add(self.panel)
+        # an account's menu, beside the dashboard (see open_sub)
+        self.side = styled(Gtk.Box(orientation=Gtk.Orientation.VERTICAL), "ct-panel")
+        self.side.set_no_show_all(True)
+        self.outer = Gtk.Box()
+        self.outer.pack_start(self.side, False, False, 0)
+        self.outer.pack_start(self.panel, True, True, 0)
+        self.outer.show()
+        self.add(self.outer)
         self.page, self.sig, self.anchor, self.columns, self.hidden_at, self.count = ("home",), None, None, 1, 0, 0
+        self.sub = self.sub_sig = self.hovered = self.geom = None
+        self.cards, self.one = {}, 420
         self.connect("delete-event", lambda *_: self.hide() or True)
         self.connect("focus-out-event", lambda *_: self.hide())
         self.connect("key-press-event", self.key)
-        self.connect("hide", lambda *_: setattr(self, "hidden_at", time.time()))
+        self.connect("hide", lambda *_: (setattr(self, "hidden_at", time.time()), self.close_sub()))
 
     # ----- showing -----
 
@@ -632,7 +642,7 @@ class Dashboard(Gtk.Window):
         wa = Gdk.Display.get_default().get_monitor_at_point(*self.anchor[:2]).get_workarea()
         ctx = self.get_pango_context()
         cw = ctx.get_metrics(ctx.get_font_description(), None).get_approximate_char_width() / Pango.SCALE
-        one = max(48 * cw, 420)
+        one = self.one = int(max(48 * cw, 420))
         maxw = wa.width - 2 * self.MARGIN
         self.page, self.columns = ("home",), 2 if maxw >= 2 * one else 1  # side by side, as the old menu
         self.render(force=True)
@@ -642,13 +652,13 @@ class Dashboard(Gtk.Window):
         h = min(self.height(w), maxh)
         for sc in self.scrollers():
             sc.set_max_content_height(maxh)
-        self.set_size_request(w, h)
-        self.resize(w, h)
         ax, ay, side = self.anchor
         x = {"left": ax + self.GAP, "right": ax - w - self.GAP}.get(side, ax - w // 2)
         y = {"bottom": ay - h - self.GAP, "top": ay + self.GAP}.get(side, ay)
-        self.move(max(wa.x + self.MARGIN, min(x, wa.x + wa.width - w - self.MARGIN)),
-                  max(wa.y + self.MARGIN, min(y, wa.y + wa.height - h - self.MARGIN)))
+        x = max(wa.x + self.MARGIN, min(x, wa.x + wa.width - w - self.MARGIN))
+        y = max(wa.y + self.MARGIN, min(y, wa.y + wa.height - h - self.MARGIN))
+        self.geom = (x, y, w, h, wa)
+        self.place(x, y, w, h)
         self.realize()
         if not t and GdkX11 and isinstance(self.get_window(), GdkX11.X11Window):
             # Not opened by a click (launched again, or from the indicator's menu): without a recent
@@ -656,6 +666,74 @@ class Dashboard(Gtk.Window):
             t = GdkX11.x11_get_server_time(self.get_window())
         self.show()
         self.present_with_time(t or Gtk.get_current_event_time())
+
+    def place(self, x, y, w, h):
+        self.set_size_request(w, h)
+        self.resize(w, h)
+        self.move(x, y)
+
+    # ----- an account's menu beside the dashboard, as the old panel menu opened its submenus -----
+
+    def sub_room(self):
+        """Where an account's menu fits: "left", "right" or None (then accounts open as a page)."""
+        if not (self.geom and self.round and self.columns == 2 and self.page == ("home",)):
+            return None
+        x, _y, w, _h, wa = self.geom
+        if x - self.one >= wa.x + self.MARGIN:
+            return "left"
+        return "right" if x + w + self.one <= wa.x + wa.width - self.MARGIN else None
+
+    def hover(self, name):
+        self.hovered = name
+        if self.sub_room():
+            GLib.timeout_add(250, lambda: self.hovered == name and self.sub != name and self.open_sub(name) and False)
+
+    def open_sub(self, name):
+        """Open name's menu beside the dashboard, level with its top and as tall (the window grows)."""
+        where = self.sub_room()
+        if not where:
+            return self.go(("account", name))
+        self.sub, self.sub_sig = name, None
+        self.render_sub()
+        for n, c in self.cards.items():
+            (c.get_style_context().add_class if n == name else c.get_style_context().remove_class)("ct-open")
+        x, y, w, h, _wa = self.geom
+        self.outer.reorder_child(self.side, 0 if where == "left" else 1)
+        self.side.set_size_request(self.one, -1)
+        self.side.show()
+        self.place(x - self.one if where == "left" else x, y, w + self.one, h)
+
+    def close_sub(self):
+        if self.sub is None:
+            return
+        self.sub = self.hovered = None
+        self.side.hide()
+        for c in self.cards.values():
+            c.get_style_context().remove_class("ct-open")
+        if self.geom:
+            self.place(*self.geom[:4])
+
+    def render_sub(self):
+        sig = self.app.signature(("account", self.sub), 1)
+        if sig == self.sub_sig:
+            return
+        self.sub_sig = sig
+        content = self.account(self.sub, columns=1, sub=True)
+        if content is None:  # the account is gone
+            return self.close_sub()
+        old = [c for c in self.side.get_children() if isinstance(c, Gtk.ScrolledWindow)]
+        keep = old[0].get_vadjustment().get_value() if old else 0
+        for c in self.side.get_children():
+            c.destroy()
+        head, body = content
+        sc = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        sc.add(styled(body, "ct-body"))
+        self.side.pack_start(styled(head, "ct-head"), False, False, 0)
+        self.side.pack_start(sc, True, True, 0)
+        for c in self.side.get_children():
+            c.show_all()
+        if keep:
+            GLib.idle_add(lambda: sc.get_vadjustment().set_value(keep) and False, priority=GLib.PRIORITY_LOW)
 
     def height(self, width):
         self.panel.show_all()
@@ -666,6 +744,8 @@ class Dashboard(Gtk.Window):
 
     def key(self, _w, ev):
         if ev.keyval == Gdk.KEY_Escape:
+            if self.sub:
+                return self.close_sub() or True
             self.go(("home",), back=True) if self.page != ("home",) else self.hide()
             return True
         return False
@@ -677,6 +757,7 @@ class Dashboard(Gtk.Window):
     # ----- pages -----
 
     def go(self, page, back=False):
+        self.close_sub()
         self.page = page
         self.render(force=True, transition=Gtk.StackTransitionType.SLIDE_RIGHT if back else
                     Gtk.StackTransitionType.SLIDE_LEFT)
@@ -685,6 +766,8 @@ class Dashboard(Gtk.Window):
         """Show the current page; rebuild it only when what it shows changed (or a new page)."""
         if not (force or self.get_visible()):
             return
+        if self.sub:
+            self.render_sub()
         sig = self.app.signature(self.page, self.columns)
         if sig == self.sig and not force:
             return
@@ -738,6 +821,7 @@ class Dashboard(Gtk.Window):
     def home(self):
         a, s, now = self.app, self.app.snap, time.time()
         names = s["names"]
+        self.cards = {}
         left = vbox(*(self.account_card(n, now) for n in names))
         right = vbox()
         if a.login:
@@ -810,7 +894,12 @@ class Dashboard(Gtk.Window):
         note = a.api_note(name, u, now)
         if note:
             box.pack_start(lbl(note, "ct-small", "ct-amber", wrap=True), False, False, 0)
-        return button(box, lambda: self.go(("account", name)), "ct-card", tip=f"Sessions and projects with {name}")
+        b = button(box, lambda: self.open_sub(name), "ct-card", "ct-open" if name == self.sub else None,
+                   tip=f"Sessions and projects with {name}")
+        b.connect("enter-notify-event", lambda *_: self.hover(name))
+        b.connect("leave-notify-event", lambda *_: setattr(self, "hovered", None))
+        self.cards[name] = b
+        return b
 
     def today_card(self):
         t = self.app.today
@@ -878,7 +967,7 @@ class Dashboard(Gtk.Window):
 
     # one account: open Claude with it, its projects and sessions, log in, remove
 
-    def account(self, name):
+    def account(self, name, columns=None, sub=False):
         a, s, now = self.app, self.app.snap, time.time()
         if name not in s["names"]:
             return None
@@ -886,7 +975,9 @@ class Dashboard(Gtk.Window):
         logged_in = "email" in ident
         cmd = "claude" if name == "main" else f"claude-{name}"
         tools = [pill(ident["plan"], plan_tone(ident["plan"]))] if ident.get("plan") else []
-        head = self.header(name, a.email(ident["email"]) if logged_in else ident.get("error"), tools=tools)
+        if sub:
+            tools.insert(0, tool("window-close-symbolic", self.close_sub, "Close (Esc)"))
+        head = self.header(name, a.email(ident["email"]) if logged_in else ident.get("error"), back=not sub, tools=tools)
 
         copy = Gtk.Button(label="Copy")
         copy.connect("clicked", lambda b: (a.copy(cmd), b.set_label("Copied")))
@@ -920,7 +1011,7 @@ class Dashboard(Gtk.Window):
                      f"Logs out and deletes {cmd}; shared history stays", "red")
             rm.set_sensitive(a.login is None)
             acct.pack_start(rm, False, False, 0)
-        if self.columns == 2:
+        if (columns or self.columns) == 2:
             body = Gtk.Box(spacing=12, homogeneous=True)
             body.pack_start(vbox(actions, acct), True, True, 0)
             body.pack_start(vbox(self.places(name, now)), True, True, 0)
