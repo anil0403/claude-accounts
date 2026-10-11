@@ -744,7 +744,9 @@ class Dashboard(Gtk.Window):
         """Size the window to what is open, keeping the dashboard itself where it opened."""
         if not self.levels:
             return
+        self.root.set_size_request(-1, -1)  # measured afresh: it may have shrunk
         w, h = self.root.get_preferred_width()[1], self.root.get_preferred_height()[1]
+        self.root.set_size_request(w, h)  # the stage would give it only its minimum, a sliver of each menu
         beside = w - 2 * self.PAD - self.levels[0].view.get_preferred_width()[1]
         x, y = self.origin
         x -= self.PAD + (beside if self.side == "left" else 0)
