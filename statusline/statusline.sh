@@ -1,19 +1,22 @@
 #!/bin/bash
-# Claude Code status line (three lines, after the "claude-statusline" look):
-#   Opus 5.5 │ ◔ 23% │ my-project (main) │ ● thinking
+# claude-accounts status line for Claude Code (three lines):
+#   Opus 5.5 │ ◉ work │ ◔ 23% │ my-project (main) │ ● thinking
 #   current  ●●●○○○○○○○ 28%   ⟳ 7:00pm
 #   weekly   ●●●●●●●●○○ 79%   ⟳ mar 10, 10:00am
-# ▲ after a % = using that limit faster than time is passing (pace).
-# Fits $COLUMNS (drops thinking first; shortens the folder). NO_COLOR=1 disables colour.
-# Rate limits come from Claude Code's own input and are saved to
-# ~/.claude-accounts/.usage/<account>.json ("main" for plain `claude`). The tray app and
-# `claude-acc list` read that file, so they rarely need the usage API (which 429s easily); the app
-# also writes API answers there, which is this script's fallback when Claude Code sends no limits
-# yet. Never calls the API. Line 1 names the account (◉ main / ◉ <name>) once extra accounts from
-# claude-acc exist (launchers set CLAUDE_ACCOUNT).
-# 256-colour only.
-# One process spawn only (jq), since it runs on every refresh:
-# the git branch is read from .git/HEAD with bash builtins, and the time comes from jq's `now`.
+# ▲ after a % = using that limit faster than time is passing (pace). ◉ names the account once you
+# have extra accounts (their commands set CLAUDE_ACCOUNT). Fits $COLUMNS (drops thinking first,
+# shortens the folder). NO_COLOR=1 disables colour; 256 colours otherwise.
+#
+# Its other job: the rate limits Claude Code passes in are saved to
+# ~/.claude-accounts/.usage/<account>.json ("main" for plain `claude`). The tray and `claude-acc list`
+# read that file, so they rarely need the usage API (which rate-limits easily); the tray also writes
+# API answers there, which this script falls back to before Claude Code has sent any limits.
+#
+# Already had a status line? The installer saves its command in statusline-next beside this file;
+# then the usage is still recorded, but that command draws the status line.
+#
+# It runs on every refresh, so it starts one process (jq), plus mv when there are new limits to
+# save: the git branch is read from .git/HEAD with bash builtins, and the time comes from jq's `now`.
 input=$(cat)
 acct=${CLAUDE_ACCOUNT:-}
 usage="$HOME/.claude-accounts/.usage"
@@ -106,4 +109,10 @@ if [ -n "$feed" ]; then
   # Write-then-rename so readers never see half a file.
   printf '%s\n' "$feed" 2>/dev/null > "$live.$$" && mv -f "$live.$$" "$live" 2>/dev/null
 fi
-printf '%s\n' "${out#*$'\n'}"
+next=""
+[ -r "${BASH_SOURCE[0]%/*}/statusline-next" ] && IFS= read -r next < "${BASH_SOURCE[0]%/*}/statusline-next"
+if [ -n "$next" ]; then
+  bash -c "$next" <<<"$input"
+else
+  printf '%s\n' "${out#*$'\n'}"
+fi
