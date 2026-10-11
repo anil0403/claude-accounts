@@ -1,0 +1,450 @@
+#!/bin/bash
+# claude-acc — several Claude subscriptions on one machine,
+# one shared history.
+#
+#   claude-acc add <name> [--email you@x.com] [--no-login]
+#                              create account <name> + launcher `claude-<name>`, then log it in
+#   claude-acc login <name>    (re)log an account in, e.g. after its login expired
+#   claude-acc list            every account: who it is logged in as, plan, last-seen usage
+#   claude-acc run <name> [args...]   start Claude on that account (same as `claude-<name> args...`)
+#   claude-acc sync            (re)link shared files and rewrite launchers for every account
+#   claude-acc share [--auto|--no-auto]
+#                              make skills/plugins added to one project available in every project
+#                              and account; --auto runs it at every session start
+#   claude-acc rm <name> [--yes]      log out and remove an account (shared history is untouched)
+#
+# Plain `claude` stays the "main" account in ~/.claude. Each extra account gets its own
+# CLAUDE_CONFIG_DIR (~/.claude-accounts/<name>) holding only per-account state: its login,
+# .claude.json, Remote Control daemon/sessions, jobs. Everything in SHARED below is a symlink back
+# into ~/.claude, so `--resume`/`--continue`, history, settings, skills, plugins, memory and the
+# status line are the same whichever account you launch.
+#
+# The login lives in <config dir>/.credentials.json, so accounts never share a login.
+set -euo pipefail
+
+MAIN="$HOME/.claude"
+ROOT="$HOME/.claude-accounts"
+BIN="$HOME/.local/bin"
+USAGE="$ROOT/.usage"   # <name>.json, written by shared/statusline.sh and the tray app
+
+# Allowlist: anything not named here stays per-account (safer for files Claude Code adds later).
+SHARED_DIRS=(
+  projects file-history todos plans tasks
+  skills agents commands plugins output-styles hooks
+  paste-cache uploads shell-snapshots session-env downloads chrome cache
+)
+SHARED_FILES=(history.jsonl settings.json settings.local.json statusline.sh CLAUDE.md)
+
+# Keys copied from main's .claude.json into a new account are everything except the login and
+# caches that belong to main's subscription (they are re-fetched for the new account).
+SEED_DROP='del(.oauthAccount, .userID, .cachedUsageUtilization, .cachedExtraUsageDisabledReason,
+  .passesEligibilityCache, .modelAccessCache, .orgModelDefaultCache, .groveConfigCache,
+  .additionalModelOptionsCache, .additionalModelCostsCache, .cachedGrowthBookFeatures,
+  .cachedGrowthBookFeaturesAt, .cachedExperimentData, .cachedExperimentFeatures, .cachedArtifactRoster)'
+
+die()  { echo "claude-acc: $*" >&2; exit 1; }
+warn() { echo "claude-acc: $*" >&2; }
+
+CLAUDE_BIN=${CLAUDE_ACC_CLAUDE:-$(command -v claude || true)}
+[ -n "$CLAUDE_BIN" ] || die "Claude Code ('claude') is not on PATH"
+command -v jq >/dev/null || die "jq is missing (Arch: sudo pacman -S jq, Debian/Ubuntu: sudo apt install jq)"
+
+valid()  { [[ $1 =~ ^[a-z0-9][a-z0-9-]{0,19}$ ]] && [ "$1" != main ] && [ "$1" != acc ]; }
+exists() { valid "$1" && [ -d "$ROOT/$1" ]; }
+cfg()    { if [ "$1" = main ]; then echo "$MAIN"; else echo "$ROOT/$1"; fi; }
+accounts() { local d n; for d in "$ROOT"/*/; do n=$(basename "$d"); [ -d "$d" ] && valid "$n" && echo "$n"; done; return 0; }   # skips Claude Code's <name>.lock dirs
+
+# Run claude for an account (main = no CLAUDE_CONFIG_DIR).
+as() {  # $1 = name, rest = claude args
+  local name=$1; shift
+  if [ "$name" = main ]; then env -u CLAUDE_CONFIG_DIR -u CLAUDE_ACCOUNT "$CLAUDE_BIN" "$@"
+  else CLAUDE_CONFIG_DIR="$ROOT/$name" CLAUDE_ACCOUNT="$name" "$CLAUDE_BIN" "$@"; fi
+}
+
+link_shared() {  # $1 = account dir
+  local dir=$1 item
+  for item in "${SHARED_DIRS[@]}" "${SHARED_FILES[@]}"; do
+    [ -e "$MAIN/$item" ] || continue
+    if [ -L "$dir/$item" ]; then continue
+    elif [ -e "$dir/$item" ]; then
+      warn "  ! $dir/$item is a real file, not linked (merge it into ~/.claude/$item, delete it, then run: claude-acc sync)"
+    else
+      ln -s "$MAIN/$item" "$dir/$item" 2>/dev/null || die "could not symlink $item"
+    fi
+  done
+}
+
+# Make sure shared folders exist in main, so an account never creates its own private copy first.
+ensure_main() {
+  local item
+  mkdir -p "$MAIN"
+  for item in "${SHARED_DIRS[@]}"; do mkdir -p "$MAIN/$item"; done
+}
+
+write_launcher() {  # $1 = name
+  mkdir -p "$BIN"
+  cat > "$BIN/claude-$1" <<EOF
+#!/bin/bash
+# Launcher for Claude account "$1" (made by claude-acc; rewritten by \`claude-acc sync\`).
+export CLAUDE_CONFIG_DIR="$ROOT/$1" CLAUDE_ACCOUNT="$1"
+bin="$CLAUDE_BIN"; [ -x "\$bin" ] || bin=claude
+exec "\$bin" "\$@"
+EOF
+  chmod +x "$BIN/claude-$1"
+}
+
+status_json() { as "$1" auth status --json 2>/dev/null || true; }  # exits 1 when logged out
+
+# Read a line without echoing it, one * per character. Sets MASKED. Returns 1 if process $1
+# exits while we wait (the login finished in the browser on its own).
+read_masked() {
+  local pid=$1 c st
+  MASKED=""
+  while :; do
+    IFS= read -rsn1 -t 1 c; st=$?
+    if [ $st -gt 128 ]; then                            # timeout
+      kill -0 "$pid" 2>/dev/null && continue; echo; return 1
+    fi
+    [ $st -eq 0 ] || break                              # EOF
+    case $c in
+      '') break ;;                                      # Enter
+      $'\x7f'|$'\b') [ -n "$MASKED" ] && { MASKED=${MASKED%?}; printf '\b \b'; } ;;
+      $'\x15') while [ -n "$MASKED" ]; do MASKED=${MASKED%?}; printf '\b \b'; done ;;  # Ctrl+U
+      *) MASKED+=$c; printf '*' ;;
+    esac
+  done
+  echo
+}
+
+# `claude auth login`, but we read the code ourselves: Claude's prompt shows nothing while you
+# paste, which makes it easy to paste twice or paste a code from an older tab. Both fail with 400.
+login_masked() {  # $1 = name, rest = extra `claude auth login` args
+  local name=$1; shift
+  local tmp pid want code half i
+  tmp=$(mktemp -d); mkfifo "$tmp/in"
+  as "$name" auth login "$@" < "$tmp/in" > "$tmp/out" 2>&1 &
+  pid=$!
+  exec 3> "$tmp/in"
+  trap "kill $pid 2>/dev/null; rm -rf '$tmp'; echo; exit 130" INT
+  for i in $(seq 150); do grep -q 'Paste code' "$tmp/out" && break; kill -0 $pid 2>/dev/null || break; sleep 0.2; done
+  sed 's/Paste code here if prompted > .*//' "$tmp/out"
+  echo
+  # The code is "<code>#<state>"; <state> must match the link this run opened.
+  want=$(grep -o 'state=[A-Za-z0-9_-]*' "$tmp/out" | head -1); want=${want#state=}
+  while kill -0 $pid 2>/dev/null; do
+    printf 'Paste the code from the browser (Ctrl+Shift+V in most terminals), then Enter: '
+    read_masked $pid || break
+    code=$(printf '%s' "$MASKED" | sed $'s/\e\\[[0-9;]*[~A-Za-z]//g' | tr -d '[:space:]')
+    [ -n "$code" ] || continue
+    half=$(( ${#code} / 2 ))
+    if [ $(( ${#code} % 2 )) -eq 0 ] && [ "${code:0:half}" = "${code:half}" ]; then
+      code=${code:0:half}; echo "  (pasted twice, using one copy)"
+    fi
+    if [[ $code != *#* ]]; then
+      echo "  That isn't a login code (it has no '#'). Copy it again from the browser."; continue
+    fi
+    if [ -n "$want" ] && [ "${code#*#}" != "$want" ]; then
+      echo "  That code is from a different login attempt (an older browser tab)."
+      echo "  Use the tab this login opened, or open the link above."; continue
+    fi
+    echo "  Got ${#code} characters (${code:0:4}…${code: -4}). Logging in…"
+    printf '%s\n' "$code" >&3
+    break
+  done
+  exec 3>&-
+  wait $pid; i=$?
+  awk 'f { print; next } sub(/.*Paste code here if prompted > /, "") { f = 1; if ($0 != "") print }' "$tmp/out"
+  trap - INT; rm -rf "$tmp"
+  return $i
+}
+
+do_login() {  # $1 = name, rest = extra `claude auth login` args
+  local name=$1; shift
+  echo
+  echo "Logging in account '$name'."
+  echo "  Your browser may already be signed in to claude.ai as another account. If so, sign out"
+  echo "  there first, or open the login link Claude prints in a private window."
+  echo
+  if [ -t 0 ] && [ -t 1 ]; then login_masked "$name" "$@"; else as "$name" auth login "$@"; fi || { warn "login did not finish; retry with: claude-acc login $name"; return 1; }
+  local email; email=$(status_json "$name" | jq -r '.email // empty')
+  [ -n "$email" ] || { warn "still not logged in; retry with: claude-acc login $name"; return 1; }
+  echo "Account '$name' is logged in as $email."
+  local other
+  for other in main $(accounts); do
+    [ "$other" = "$name" ] && continue
+    if [ "$(status_json "$other" | jq -r '.email // empty')" = "$email" ]; then
+      warn "warning: '$other' is logged in as the same $email. Run: claude-acc login $name  and pick the other account."
+    fi
+  done
+}
+
+cmd_add() {
+  local name=${1:-} login=1 extra=()
+  valid "$name" || die "name must be lowercase letters/digits/-, max 20, not 'main' (got '${name}')"
+  shift
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --no-login) login="" ;;
+      --email) [ $# -ge 2 ] || die "--email needs an address"; extra+=(--email "$2"); shift ;;
+      *) die "unknown option '$1'" ;;
+    esac
+    shift
+  done
+  local dir="$ROOT/$name"
+  [ -e "$dir" ] && die "account '$name' already exists"
+  ensure_main
+  mkdir -p "$dir"; chmod 700 "$ROOT" "$dir"
+  # Start from main's .claude.json (onboarding, theme, trusted folders, MCP servers) minus the login.
+  if [ -f "$HOME/.claude.json" ]; then
+    jq "$SEED_DROP" "$HOME/.claude.json" > "$dir/.claude.json"
+    chmod 600 "$dir/.claude.json"
+  fi
+  link_shared "$dir"
+  write_launcher "$name"
+  echo "Created account '$name'  →  launcher: claude-$name"
+  if [ -n "$login" ] && [ -t 0 ]; then
+    do_login "$name" "${extra[@]}" || true
+  else
+    echo "Log it in with:  claude-acc login $name   (or run claude-$name and type /login)"
+  fi
+}
+
+cmd_login() {
+  local name=${1:-}
+  [ "$name" = main ] || exists "$name" || die "no account '$name'"
+  shift
+  do_login "$name" "$@"
+}
+
+cmd_sync() {
+  ensure_main
+  local n
+  for n in $(accounts); do
+    link_shared "$ROOT/$n"
+    write_launcher "$n"
+  done
+  echo "Synced."
+}
+
+# ---- share: project-level skills/plugins -> user level (= every project, every account) ----
+# Accounts already share ~/.claude/skills and ~/.claude/plugins through the links above; this
+# promotes what was added to ONE project's .claude/ so it shows up everywhere. Each item is
+# promoted once (remembered in $SHARE_STATE), so removing or disabling it later sticks.
+SHARE_STATE="$ROOT/.shared"
+SHARE_LOG="$ROOT/.shared.log"
+SHARE_ROOTS=${CLAUDE_ACC_PROJECTS:-$HOME/Projects}   # colon-separated folders searched for projects
+
+share_projects() {  # every project folder with a .claude/ (one per line, $HOME excluded)
+  local f r
+  {
+    jq -r '.project // empty' "$MAIN/history.jsonl" 2>/dev/null || true
+    for f in "$HOME/.claude.json" "$ROOT"/*/.claude.json; do
+      [ -f "$f" ] && { jq -r '.projects // {} | keys[]' "$f" 2>/dev/null || true; }
+    done
+    IFS=: read -ra r <<<"$SHARE_ROOTS"
+    for f in "${r[@]}"; do
+      [ -d "$f" ] && { find "$f" -maxdepth 5 \( -name node_modules -o -name .git -o -path '*/.claude/*' \) -prune \
+        -o -type d -name .claude -print 2>/dev/null | sed 's|/\.claude$||' || true; }
+    done
+    echo "$PWD"
+    [ -n "${CLAUDE_PROJECT_DIR:-}" ] && echo "$CLAUDE_PROJECT_DIR"
+  } | sort -u | while IFS= read -r f; do
+    [ -n "$f" ] && [ "$f" != "$HOME" ] && [ -d "$f/.claude" ] && echo "$f"
+  done
+  return 0
+}
+
+shared_before() { [ -f "$SHARE_STATE" ] && grep -qxF "$1" "$SHARE_STATE"; }
+mark_shared()   { echo "$1" >>"$SHARE_STATE"; }
+
+# Skills that an enabled user plugin already ships under the same name (no point copying them).
+plugin_skill_names() {
+  local ip="$MAIN/plugins/installed_plugins.json" id path
+  [ -f "$ip" ] || return 0
+  jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' "$MAIN/settings.json" 2>/dev/null |
+  while IFS= read -r id; do
+    jq -r --arg id "$id" '.plugins[$id] // [] | .[] | select(.scope == "user") | .installPath' "$ip" |
+    while IFS= read -r path; do
+      [ -d "$path/skills" ] && ls "$path/skills"
+    done
+  done | sort -u
+}
+
+share_skills() {  # $1 = project
+  local proj=$1 src name dest key
+  [ -d "$proj/.claude/skills" ] || return 0
+  for src in "$proj/.claude/skills"/*/; do
+    [ -f "${src}SKILL.md" ] || continue
+    src=${src%/}; name=$(basename "$src"); dest="$MAIN/skills/$name"; key="skill	$src"
+    shared_before "$key" && continue
+    if [ "$(realpath "$dest" 2>/dev/null)" = "$(realpath "$src")" ]; then mark_shared "$key"; continue; fi
+    if grep -qxF "$name" <<<"$PLUGIN_SKILLS"; then
+      say "  = skill $name ($proj): already provided by an enabled plugin, skipped"; mark_shared "$key"; continue
+    fi
+    if [ -e "$dest" ] || [ -L "$dest" ]; then
+      say "  ! skill $name ($proj): ~/.claude/skills/$name already exists and is a different skill, skipped"
+      mark_shared "$key"; continue
+    fi
+    ln -s "$src" "$dest"; mark_shared "$key"
+    say "  + skill $name (from $proj)"
+  done
+}
+
+share_plugins() {  # $1 = project
+  local proj=$1 f id mkt src arg key installed
+  for f in "$proj/.claude/settings.json" "$proj/.claude/settings.local.json"; do
+    [ -f "$f" ] || continue
+    jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' "$f" 2>/dev/null |
+    while IFS= read -r id; do
+      key="plugin	$proj	$id"
+      shared_before "$key" && continue
+      if [ "$(jq -r --arg id "$id" '.enabledPlugins[$id] // false' "$MAIN/settings.json")" = true ]; then
+        mark_shared "$key"; continue
+      fi
+      mkt=${id#*@}
+      if [ "$mkt" != "$id" ] && ! jq -e --arg m "$mkt" 'has($m)' "$MAIN/plugins/known_marketplaces.json" >/dev/null 2>&1; then
+        src=$(jq -c --arg m "$mkt" '.extraKnownMarketplaces[$m].source // empty' "$f")
+        arg=""; [ -n "$src" ] && arg=$(jq -r '.repo // .url // .path // empty' <<<"$src")
+        if [ -z "$arg" ]; then say "  ! plugin $id ($proj): marketplace '$mkt' unknown, skipped (add it: claude plugin marketplace add <source>)"; continue; fi
+        as main plugin marketplace add "$arg" --scope user </dev/null >>"$SHARE_LOG" 2>&1 ||
+          { say "  ! plugin $id: could not add marketplace $arg (see $SHARE_LOG)"; continue; }
+      fi
+      installed=$(jq -r --arg id "$id" '[.plugins[$id] // [] | .[] | select(.scope == "user")] | length' \
+        "$MAIN/plugins/installed_plugins.json" 2>/dev/null || echo 0)
+      if [ "$installed" = 0 ]; then
+        as main plugin install "$id" --scope user </dev/null >>"$SHARE_LOG" 2>&1 ||
+          { say "  ! plugin $id: install failed (see $SHARE_LOG)"; continue; }
+      fi
+      if [ "$(jq -r --arg id "$id" '.enabledPlugins[$id] // false' "$MAIN/settings.json")" != true ]; then
+        as main plugin enable "$id" --scope user </dev/null >>"$SHARE_LOG" 2>&1 ||
+          { say "  ! plugin $id: enable failed (see $SHARE_LOG)"; continue; }
+      fi
+      mark_shared "$key"
+      say "  + plugin $id (from $proj) — now on in every project"
+    done
+  done
+}
+
+share_hook() {  # add/remove the SessionStart hook in the shared settings.json
+  local s="$MAIN/settings.json" cmd="\"$BIN/claude-acc\" share --quiet >/dev/null 2>&1 &" tmp
+  [ -f "$s" ] || echo '{}' >"$s"
+  tmp=$(mktemp)
+  if [ "$1" = on ]; then
+    jq --arg c "$cmd" 'if [.hooks.SessionStart // [] | .[].hooks[]?.command] | index($c) then . else
+      .hooks.SessionStart = ((.hooks.SessionStart // []) + [{hooks: [{type: "command", command: $c}]}]) end' "$s" >"$tmp"
+  else
+    jq '(.hooks.SessionStart // []) as $h | .hooks.SessionStart = [$h[] | .hooks |= map(select(.command | test("claude-acc\" share") | not)) | select(.hooks | length > 0)]
+      | if .hooks.SessionStart == [] then del(.hooks.SessionStart) else . end | if .hooks == {} then del(.hooks) else . end' "$s" >"$tmp"
+  fi
+  cat "$tmp" >"$s"; rm -f "$tmp"   # write in place: keeps the file (and every account's link to it)
+}
+
+cmd_share() {
+  local quiet=0 proj
+  case ${1:-} in
+    --quiet) quiet=1 ;;
+    --auto)  share_hook on;  echo "Auto-share on: every Claude session start (any account) runs 'claude-acc share'." ;;
+    --no-auto) share_hook off; echo "Auto-share off."; return 0 ;;
+    "") ;;
+    *) die "usage: claude-acc share [--quiet | --auto | --no-auto]" ;;
+  esac
+  if [ "$quiet" = 1 ]; then say() { echo "$(date '+%F %T') $*" >>"$SHARE_LOG"; }; else say() { echo "$*"; }; fi
+  ensure_main
+  # One share at a time (mkdir is atomic); a lock older than 10 minutes is from a run that died.
+  SHARE_LOCK="$ROOT/.shared.lock.d"   # global: the EXIT trap runs after this function returns
+  mkdir -p "$ROOT"
+  if [ -n "$(find "$SHARE_LOCK" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then rmdir "$SHARE_LOCK" 2>/dev/null || true; fi
+  mkdir "$SHARE_LOCK" 2>/dev/null || { [ "$quiet" = 1 ] || echo "Another share is running."; return 0; }
+  trap 'rmdir "$SHARE_LOCK" 2>/dev/null || true' EXIT
+  PLUGIN_SKILLS=$(plugin_skill_names)
+  local before; before=$( { cat "$SHARE_STATE" 2>/dev/null || true; } | wc -l)  # no state file on first run
+  while IFS= read -r proj; do
+    share_skills "$proj"
+    share_plugins "$proj"
+  done < <(share_projects)
+  # drop links to skills whose project folder is gone
+  for proj in "$MAIN/skills"/*; do
+    [ -L "$proj" ] && [ ! -e "$proj" ] && grep -qF "skill	$(readlink "$proj")" "$SHARE_STATE" 2>/dev/null &&
+      { grep -vxF "skill	$(readlink "$proj")" "$SHARE_STATE" >"$SHARE_STATE.tmp" || true; mv "$SHARE_STATE.tmp" "$SHARE_STATE"
+        rm -f "$proj"; say "  - skill $(basename "$proj"): its project is gone, unlinked"; }
+  done
+  [ "$quiet" = 1 ] || { [ "$( { cat "$SHARE_STATE" 2>/dev/null || true; } | wc -l)" = "$before" ] && echo "Nothing new to share."; } || true
+}
+
+cmd_list() {
+  local now names n tmp
+  now=$(date +%s)
+  names=(main $(accounts))
+  tmp=$(mktemp -d); trap 'rm -rf "$tmp"' RETURN
+  for n in "${names[@]}"; do status_json "$n" > "$tmp/$n" & done   # in parallel: each call takes ~1s
+  wait
+  printf '  %-12s %-16s %-32s %-6s %s\n' ACCOUNT COMMAND "LOGGED IN AS" PLAN "USAGE (last seen)"
+  for n in "${names[@]}"; do
+    local cmd=claude; [ "$n" = main ] || cmd="claude-$n"
+    local who plan use="-"
+    who=$(jq -r 'if .loggedIn then (.email // "logged in") else "NOT LOGGED IN" end' "$tmp/$n" 2>/dev/null || echo "?")
+    plan=$(jq -r '.subscriptionType // "-"' "$tmp/$n" 2>/dev/null || echo "-")
+    if [ -f "$USAGE/$n.json" ]; then
+      use=$(jq -r --argjson now "$now" '
+        def ago: ($now - .) | if . < 3600 then "\(. / 60 | floor)m" elif . < 86400 then "\(. / 3600 | floor)h" else "\(. / 86400 | floor)d" end;
+        def dur: if . < 3600 then "\(. / 60 | floor)m" elif . < 86400 then "\(. / 3600 | floor)h" else "\(. / 86400 | floor)d" end;
+        def lim(name; x): if (x.resets_at // 0) > $now then "\(name) \(x.pct)% (resets in \((x.resets_at - $now) | dur))" else "\(name) reset" end;
+        "\(lim("5h"; .session))  \(lim("7d"; .weekly))  · seen \(.updated | ago) ago"' \
+        "$USAGE/$n.json" 2>/dev/null || echo "-")
+    fi
+    printf '  %-12s %-16s %-32s %-6s %s\n' "$n" "$cmd" "$who" "$plan" "$use"
+  done
+  [ -d "$USAGE" ] || echo "  (usage column fills in once the status line is installed)"
+}
+
+cmd_run() {
+  local name=${1:-}
+  [ "$name" = main ] || exists "$name" || die "no account '$name'"
+  shift
+  if [ "$name" = main ]; then exec env -u CLAUDE_CONFIG_DIR -u CLAUDE_ACCOUNT "$CLAUDE_BIN" "$@"; fi
+  CLAUDE_CONFIG_DIR="$ROOT/$name" CLAUDE_ACCOUNT="$name" exec "$CLAUDE_BIN" "$@"
+}
+
+cmd_rm() {
+  local name=${1:-}
+  if [ "$name" = main ]; then
+    # main is plain `claude` (~/.claude), which also holds the shared history: only its login goes.
+    if [ "${2:-}" != --yes ]; then
+      read -r -p "Log main out (plain 'claude')? History, settings and other accounts are kept. [y/N] " ok
+      [[ $ok == [yY]* ]] || exit 0
+    fi
+    as main auth logout >/dev/null 2>&1 || true
+    rm -f "$USAGE/main.json"
+    echo "Logged main out. Log in again with: claude-acc login main"
+    return 0
+  fi
+  exists "$name" || die "no account '$name'"
+  if [ "${2:-}" != --yes ]; then
+    read -r -p "Remove account '$name' (log it out and delete ~/.claude-accounts/$name)? [y/N] " ok
+    [[ $ok == [yY]* ]] || exit 0
+  fi
+  as "$name" auth logout >/dev/null 2>&1 || true
+  # Unlink shared items first; rm -rf never follows symlinks, but be explicit about it.
+  find "$ROOT/$name" -maxdepth 1 -type l -delete
+  local item
+  for item in "${SHARED_DIRS[@]}" "${SHARED_FILES[@]}"; do
+    if [ -e "$ROOT/$name/$item" ] && [ "$(realpath "$ROOT/$name/$item")" = "$(realpath "$MAIN/$item" 2>/dev/null)" ]; then
+      die "refusing: $ROOT/$name/$item still points at shared data; remove that link by hand"
+    fi
+  done
+  rm -rf "${ROOT:?}/${name:?}"
+  rm -f "$BIN/claude-$name" "$USAGE/$name.json"
+  echo "Removed '$name'."
+}
+
+case ${1:-list} in
+  add)        shift; cmd_add "$@" ;;
+  login)      shift; cmd_login "$@" ;;
+  list|ls)    cmd_list ;;
+  run)        shift; cmd_run "$@" ;;
+  sync)       cmd_sync ;;
+  share)      shift; cmd_share "$@" ;;
+  rm|remove)  shift; cmd_rm "$@" ;;
+  -h|--help|help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command '$1' (try: add, login, list, run, sync, share, rm)" ;;
+esac
