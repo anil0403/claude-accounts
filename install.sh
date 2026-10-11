@@ -130,6 +130,7 @@ command -v jq >/dev/null || missing+=(jq)
 if [ "$tray" = 1 ]; then
   command -v python3 >/dev/null || missing+=(python)
   have_gi Gtk 3.0 || missing+=(gtk)
+  python3 -c 'import gi; gi.require_foreign("cairo")' 2>/dev/null || missing+=(cairo)  # the frosted glass
   # Cinnamon, MATE and Xfce show the icon through XApp; other panels need an AppIndicator.
   if ! { [[ $desktop =~ cinnamon|mate|xfce ]] && have_gi XApp 1.0; }; then
     have_gi AyatanaAppIndicator3 0.1 || have_gi AppIndicator3 0.1 || missing+=(indicator)
@@ -148,6 +149,9 @@ pkgs_for() {  # $1 = package manager, rest = generic names
       apt:gtk) echo python3-gi gir1.2-gtk-3.0 ;;
       dnf:gtk) echo python3-gobject gtk3 ;;
       zypper:gtk) echo python3-gobject python3-gobject-Gdk typelib-1_0-Gtk-3_0 ;;
+      pacman:cairo) echo python-cairo ;;
+      apt:cairo) echo python3-gi-cairo ;;
+      dnf:cairo|zypper:cairo) echo python3-cairo ;;
       pacman:indicator) echo libayatana-appindicator ;;
       apt:indicator) echo gir1.2-ayatanaappindicator3-0.1 ;;
       dnf:indicator) echo libayatana-appindicator-gtk3 ;;
