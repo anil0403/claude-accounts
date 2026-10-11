@@ -49,6 +49,7 @@ claude-acc: several Claude Code accounts on one machine, one shared history.
   claude-acc rm <name> [--yes]
                              log out and remove an account (shared history is kept)
   claude-acc doctor          check the setup and say what to fix
+  claude-acc uninstall       remove claude-accounts (accounts and history are kept)
   claude-acc version
 
 Plain `claude` is the account "main". History, sessions, settings, skills, plugins and memory are
@@ -62,6 +63,10 @@ warn() { echo "claude-acc: $*" >&2; }
 case ${1:-} in   # these work before Claude Code and jq are installed
   -h|--help|help) usage; exit 0 ;;
   version|--version|-V) echo "claude-acc $VERSION"; exit 0 ;;
+  uninstall)
+    inst="${XDG_DATA_HOME:-$HOME/.local/share}/claude-accounts/install.sh"
+    [ -f "$inst" ] || die "the installer is not in ${inst%/*}; download it and run: bash install.sh --uninstall"
+    exec bash "$inst" --uninstall ;;
 esac
 
 CLAUDE_BIN=${CLAUDE_ACC_CLAUDE:-$(command -v claude || true)}
@@ -451,10 +456,10 @@ cmd_doctor() {
   else
     hint "status line '$cmd' doesn't record usage for the tray and 'claude-acc list'"
   fi
-  if grep -qF 'claude-acc" share' "$MAIN/settings.json" 2>/dev/null; then ok "skills/plugins are shared at every session start"
+  if jq -e '[.hooks.SessionStart[]?.hooks[]?.command] | any(test("claude-acc\" share"))' "$MAIN/settings.json" >/dev/null 2>&1; then ok "skills/plugins are shared at every session start"
   else hint "auto-share is off (turn on: claude-acc share --auto)"; fi
   if command -v claude-tray >/dev/null; then
-    if pgrep -f 'claude-tray' >/dev/null; then ok "tray is running"; else hint "tray is installed but not running (start: claude-tray &)"; fi
+    if pgrep -f '/claude-tray( |$)' >/dev/null; then ok "tray is running"; else hint "tray is installed but not running (start: claude-tray &)"; fi
   else
     hint "tray is not installed"
   fi
