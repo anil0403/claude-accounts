@@ -1,0 +1,1388 @@
+#!/usr/bin/env python3
+"""claude-tray: Claude Code usage and accounts in the panel.
+
+Usage: claude-tray [--background | --test | --help | --version]
+
+  (no option)    start the tray and open the dashboard, or open it if the tray already runs
+  --background   start the tray without opening the dashboard (used at login)
+  --test         print what the dashboard would show and exit (no window, no network)
+
+The panel icon is a ring with the 5-hour usage of the account you used last: amber from 70%,
+red from 90%, grey when the numbers are over 30 minutes old. Click it for the dashboard:
+each account's 5-hour and weekly usage (the tick on a bar is where even spending would be),
+today's activity across all accounts, the account with the most room left and the sessions
+running now. Click an account to continue a session or open a project with it, log it in or
+remove it. Sessions are shared, so a session started on one account continues on any other.
+
+Usage numbers come from the status line (~/.claude-accounts/.usage). When an account's numbers
+are over 5 minutes old the tray asks Anthropic's usage API with that account's own login.
+
+Terminal: the first of kitty, gnome-terminal, konsole, xfce4-terminal, alacritty, wezterm,
+foot, tilix and xterm that is installed; set CLAUDE_TRAY_TERMINAL to pick one.
+Settings: ~/.config/claude-tray/settings.json      Log: ~/.cache/claude-tray/tray.log
+"""
+# ruff: noqa: F403, F405, E402
+import importlib
+import json
+import math
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from core import *
+
+APP_ID = "io.github.anil0403.ClaudeAccounts"
+REPO = "https://github.com/anil0403/claude-accounts"
+
+if __name__ == "__main__":
+    arg = sys.argv[1] if len(sys.argv) > 1 else ""
+    if arg in ("-h", "--help"):
+        print(__doc__.strip())
+        sys.exit(0)
+    if arg in ("-V", "--version"):
+        print(f"claude-tray {VERSION}")
+        sys.exit(0)
+    if arg in ("-t", "--test"):
+        sys.exit(test())
+    if arg not in ("", "--background"):
+        sys.exit(f"claude-tray: unknown option '{arg}' (try: claude-tray --help)")
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk
+
+Gdk.set_allowed_backends("x11,*")  # tray icons and window placement need X11 (XWayland on Wayland)
+from gi.repository import Gio, GLib, Gtk, Pango
+
+XApp = Indicator = GdkX11 = None
+try:
+    gi.require_version("GdkX11", "3.0")
+    from gi.repository import GdkX11
+except (ValueError, ImportError):
+    pass
+try:
+    gi.require_version("XApp", "1.0")
+    from gi.repository import XApp
+except (ValueError, ImportError):
+    pass
+for _ns in ("AyatanaAppIndicator3", "AppIndicator3"):
+    try:
+        gi.require_version(_ns, "0.1")
+        Indicator = importlib.import_module("gi.repository." + _ns)
+        break
+    except (ValueError, ImportError):
+        pass
+
+
+# ---------- look ----------
+
+# A strong tone for dots, bars and badges, and a text tone that reads on the window's background.
+GREEN, AMBER, RED, GREY, BLUE, PURPLE = "#3fb950", "#d29922", "#f85149", "#8b949e", "#4c8bf5", "#a371f7"
+TONES = {"green": GREEN, "amber": AMBER, "red": RED, "grey": GREY, "blue": BLUE, "purple": PURPLE}
+TEXT_ON_DARK = {"green": "#56d364", "amber": "#e3b341", "red": "#ff7b72", "grey": "#b1bac4",
+                "blue": "#79a8ff", "purple": "#c4a5ff"}
+TEXT_ON_LIGHT = {"green": "#1a7f37", "amber": "#9a6700", "red": "#cf222e", "grey": "#57606a",
+                 "blue": "#0969da", "purple": "#8250df"}
+MODEL_TONES = {"Opus": "amber", "Sonnet": "blue", "Haiku": "green", "Fable": "purple"}
+
+CSS = """
+window.ct-window { background-color: transparent; }
+.ct-panel { background-color: @ct_bg; color: @ct_fg; border-radius: 14px; margin: 8px;
+            border: 1px solid alpha(@ct_fg, 0.14); box-shadow: 0 4px 12px alpha(black, 0.35); }
+.ct-panel.ct-square { border-radius: 0; margin: 0; box-shadow: none; }
+.ct-head { padding: 12px 12px 8px 16px; }
+.ct-body { padding: 0 12px 12px 12px; }
+.ct-card { background-color: alpha(@ct_fg, 0.05); border-radius: 12px; padding: 14px;
+           border: 1px solid alpha(@ct_fg, 0.07); }
+button.ct-card { background-image: none; box-shadow: none; text-shadow: none; }
+button.ct-card:hover { background-color: alpha(@ct_fg, 0.1); }
+button.ct-row { padding: 6px 8px; border-radius: 8px; border: none; background-image: none; box-shadow: none; }
+button.ct-row:hover { background-color: alpha(@ct_fg, 0.08); }
+button.ct-tool { padding: 5px; border-radius: 8px; min-width: 0; min-height: 0; }
+.ct-title { font-weight: bold; font-size: larger; }
+.ct-app { font-weight: bold; font-size: larger; }
+.ct-small { font-size: smaller; }
+.ct-dim { opacity: 0.72; }
+.ct-caption { font-size: smaller; font-weight: bold; opacity: 0.7; }
+.ct-pct { font-weight: bold; }
+.ct-big { font-weight: bold; font-size: x-large; }
+.ct-pill { border-radius: 99px; padding: 1px 9px; font-size: smaller; font-weight: bold; }
+.ct-icon { border-radius: 7px; padding: 5px; background-color: alpha(@ct_fg, 0.1); }
+.ct-banner { border-radius: 10px; padding: 9px 12px; }
+.ct-code { font-family: monospace; border-radius: 6px; padding: 2px 8px; background-color: alpha(@ct_fg, 0.1); }
+.ct-pin { opacity: 0.35; }
+.ct-pin.ct-on { opacity: 1; }
+"""
+
+
+def heat(pct):
+    return RED if pct >= 90 else AMBER if pct >= 70 else None
+
+
+def tone_for(pct):
+    return "red" if pct >= 90 else "amber" if pct >= 70 else "green"
+
+
+def plan_tone(plan):
+    return "purple" if plan.lower() in ("max", "team", "enterprise") else "blue" if plan.lower() == "pro" else "grey"
+
+
+def esc(s):
+    return GLib.markup_escape_text(str(s))
+
+
+def hex_rgb(h):
+    return tuple(int(h[i:i + 2], 16) / 255 for i in (1, 3, 5))
+
+
+def install_css():
+    """The window takes the theme's colours; badge colours are picked for its shade."""
+    probe = Gtk.Window()
+    ctx = probe.get_style_context()
+    fg = ctx.get_color(Gtk.StateFlags.NORMAL)
+    bg = ctx.get_property("background-color", Gtk.StateFlags.NORMAL)
+    probe.destroy()
+    dark = 0.299 * fg.red + 0.587 * fg.green + 0.114 * fg.blue > 0.5
+    if bg.alpha < 0.5:  # the theme paints windows elsewhere; use a plain shade
+        bg = Gdk.RGBA(*((0.14, 0.15, 0.17) if dark else (0.97, 0.97, 0.98)), 1)
+
+    def rgb(c):
+        return f"rgb({int(c.red * 255)},{int(c.green * 255)},{int(c.blue * 255)})"
+    css = f"@define-color ct_bg {rgb(bg)};\n@define-color ct_fg {rgb(fg)};\n" + CSS
+    text = TEXT_ON_DARK if dark else TEXT_ON_LIGHT
+    for t, base in TONES.items():
+        css += (f".ct-{t} {{ color: {text[t]}; }}\n"
+                f".ct-pill.ct-{t}, .ct-banner.ct-{t} {{ background-color: alpha({base}, 0.2); }}\n"
+                f".ct-icon.ct-{t} {{ background-color: {base}; color: #ffffff; }}\n")
+    p = Gtk.CssProvider()
+    p.load_from_data(css.encode())
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), p, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+
+def icon_path(pct, dim):
+    """A 22px ring gauge as an SVG file (a new name per state so the panel doesn't serve a cached one)."""
+    os.makedirs(CACHE, exist_ok=True)
+    col = GREY if pct is None or dim else heat(pct) or GREEN
+    key = "none" if pct is None else f"{min(pct, 100)}{'-dim' if dim else ''}"
+    path = os.path.join(CACHE, f"ring-{key}.svg")
+    if not os.path.exists(path):
+        c, r = 11, 8
+        arc = ""
+        if pct:
+            frac = min(pct, 100) / 100
+            if frac >= 1:
+                arc = f'<circle cx="{c}" cy="{c}" r="{r}" fill="none" stroke="{col}" stroke-width="3"/>'
+            else:
+                a = frac * 2 * math.pi
+                x, y = c + r * math.sin(a), c - r * math.cos(a)
+                arc = (f'<path d="M {c} {c - r} A {r} {r} 0 {1 if frac > 0.5 else 0} 1 {x:.2f} {y:.2f}" '
+                       f'fill="none" stroke="{col}" stroke-width="3" stroke-linecap="round"/>')
+        svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">'
+               f'<circle cx="{c}" cy="{c}" r="{r}" fill="none" stroke="{GREY}" stroke-opacity="0.45" stroke-width="3"/>'
+               f'{arc}<circle cx="{c}" cy="{c}" r="2.5" fill="{col}"/></svg>')
+        with open(path + ".tmp", "w") as f:
+            f.write(svg)
+        os.replace(path + ".tmp", path)
+    return path
+
+
+# ---------- widgets ----------
+
+def styled(w, *classes):
+    for c in classes:
+        if c:
+            w.get_style_context().add_class(c)
+    return w
+
+
+def lbl(text, *classes, markup=False, xalign=0.0, wrap=False):
+    lb = Gtk.Label(xalign=xalign)
+    lb.set_markup(text) if markup else lb.set_text(str(text))
+    if wrap:
+        lb.set_line_wrap(True)
+        lb.set_max_width_chars(30)  # the natural width; the window's width decides the real one
+    else:
+        lb.set_ellipsize(Pango.EllipsizeMode.END)
+    return styled(lb, *classes)
+
+
+def icon(name, *classes):
+    img = Gtk.Image.new_from_icon_name(name, Gtk.IconSize.MENU)
+    img.set_valign(Gtk.Align.CENTER)
+    return styled(img, *classes)
+
+
+def pill(text, tone):
+    p = lbl(text, "ct-pill", f"ct-{tone}")
+    p.set_ellipsize(Pango.EllipsizeMode.NONE)
+    p.set_valign(Gtk.Align.CENTER)
+    return p
+
+
+def dot(tone):
+    d = Gtk.DrawingArea()
+    d.set_size_request(10, 10)
+    d.set_valign(Gtk.Align.CENTER)
+
+    def draw(w, cr):
+        cr.set_source_rgb(*hex_rgb(TONES[tone]))
+        cr.arc(5, w.get_allocated_height() / 2, 5, 0, 2 * math.pi)
+        cr.fill()
+    d.connect("draw", draw)
+    return d
+
+
+def rounded(cr, x, y, w, h, r):
+    r = min(r, w / 2, h / 2)
+    cr.new_sub_path()
+    cr.arc(x + w - r, y + r, r, -math.pi / 2, 0)
+    cr.arc(x + w - r, y + h - r, r, 0, math.pi / 2)
+    cr.arc(x + r, y + h - r, r, math.pi / 2, math.pi)
+    cr.arc(x + r, y + r, r, math.pi, 3 * math.pi / 2)
+    cr.close_path()
+
+
+def hbox(*children, spacing=8):
+    b = Gtk.Box(spacing=spacing)
+    for c in children:
+        b.pack_start(c, False, False, 0)
+    return b
+
+
+def vbox(*children, spacing=10):
+    b = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=spacing)
+    for c in children:
+        if c is not None:
+            b.pack_start(c, False, False, 0)
+    return b
+
+
+def card(*children, spacing=10):
+    return styled(vbox(*children, spacing=spacing), "ct-card")
+
+
+def button(child, cb, *classes, tip=None):
+    b = Gtk.Button()
+    b.set_relief(Gtk.ReliefStyle.NONE)
+    b.add(child)
+    if cb:
+        b.connect("clicked", lambda *_: cb())
+    if tip:
+        b.set_tooltip_text(tip)
+    return styled(b, *classes)
+
+
+def tool(icon_name, cb, tip, *classes):
+    """A small icon button (refresh, back, pin, delete)."""
+    return button(icon(icon_name, *classes), cb, "ct-tool", tip=tip)
+
+
+def two_lines(title, sub=None, tone=None):
+    b = vbox(lbl(title, f"ct-{tone}" if tone else None), spacing=1)
+    if sub:
+        b.pack_start(lbl(sub, "ct-small", "ct-dim"), False, False, 0)
+    return b
+
+
+def row(icon_name, title, cb, sub=None, tone=None):
+    """A clickable line: an icon badge, a title, and a smaller line under it."""
+    box = Gtk.Box(spacing=12)
+    box.pack_start(icon(icon_name, "ct-icon", f"ct-{tone}" if tone else None), False, False, 0)
+    box.pack_start(two_lines(title, sub, tone), True, True, 0)
+    return button(box, cb, "ct-row")
+
+
+def caption(text, note=None):
+    b = Gtk.Box()
+    b.pack_start(lbl(text, "ct-caption"), True, True, 0)
+    if note:
+        b.pack_end(lbl(note, "ct-caption", "ct-dim"), False, False, 0)
+    return b
+
+
+class Meter(Gtk.Box):
+    """One usage window: caption and time to the reset, a bar with a pace tick, the %."""
+
+    def __init__(self, caption_text, w, length, now, dim):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.w, self.dim, self.pace = w, dim, pace(w, length, now)
+        top = Gtk.Box(spacing=8)
+        top.pack_start(lbl(caption_text, "ct-caption"), False, False, 0)
+        top.pack_start(lbl(f"{w['pct']}%", "ct-pct", None if dim else f"ct-{tone_for(w['pct'])}"), False, False, 0)
+        when = f"resets in {dur(w['resets'] - now)}" if w["resets"] else "reset time unknown"
+        top.pack_end(lbl(when, "ct-small", "ct-dim", xalign=1), False, False, 0)
+        self.pack_start(top, False, False, 0)
+        bar = Gtk.DrawingArea()
+        bar.set_size_request(-1, 10)
+        bar.connect("draw", self.draw)
+        if self.pace is not None:
+            diff = w["pct"] - self.pace
+            bar.set_tooltip_text(f"{round(diff)}% over pace: at this rate you hit the limit early" if diff > 5 else
+                                 "Under pace" if diff < -5 else "On pace")
+        self.pack_start(bar, False, False, 0)
+
+    def draw(self, widget, cr):
+        width, h = widget.get_allocated_width(), widget.get_allocated_height()
+        fg = widget.get_style_context().get_color(Gtk.StateFlags.NORMAL)
+        y, bh = (h - 6) / 2, 6
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.15)
+        rounded(cr, 0, y, width, bh, 3)
+        cr.fill()
+        if self.w["pct"] > 0:
+            cr.set_source_rgb(*hex_rgb(GREY if self.dim else TONES[tone_for(self.w["pct"])]))
+            rounded(cr, 0, y, max(6, width * self.w["pct"] / 100), bh, 3)
+            cr.fill()
+        if self.pace is not None:
+            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.85)
+            rounded(cr, width * self.pace / 100 - 1, 0, 2, h, 1)
+            cr.fill()
+        return False
+
+
+# ---------- login ----------
+
+class LoginWindow(Gtk.Window):
+    """`claude auth login` without a terminal: it opens the browser itself and finishes on its own once
+    you approve (the browser link points back to localhost). A code box is there for when it doesn't."""
+
+    def __init__(self, app, name, email):
+        super().__init__(title=f"Log in: {name}")
+        self.app, self.name = app, name
+        self.out, self.states, self.cancelled = [], set(), None
+        self.set_keep_above(True)
+        self.set_position(Gtk.WindowPosition.CENTER)
+        self.set_border_width(16)
+        self.set_default_size(460, -1)
+        self.connect("delete-event", lambda *_: self.hide() or True)
+
+        os.makedirs(CACHE, exist_ok=True)
+        self.url_file = os.path.join(CACHE, f"login-{name}.url")
+        hook = os.path.join(CACHE, "browser-hook")
+        with open(hook, "w") as f:  # records the link Claude opens, then opens it as usual
+            f.write('#!/bin/sh\nprintf "%s" "$1" > "$CLAUDE_TRAY_URL_FILE"\n'
+                    'command -v xdg-open >/dev/null && exec xdg-open "$1"\n')
+        os.chmod(hook, 0o755)
+        try:
+            os.remove(self.url_file)
+        except OSError:
+            pass
+        env = dict(account_env(name), BROWSER=hook, CLAUDE_TRAY_URL_FILE=self.url_file)
+        args = [shutil.which("claude") or "claude", "auth", "login"] + (["--email", email] if email else [])
+        self.proc = subprocess.Popen(args, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT, text=True, start_new_session=True)
+        threading.Thread(target=self.reader, daemon=True).start()
+        GLib.timeout_add_seconds(LOGIN_TIMEOUT, self.timeout)
+
+        box = vbox()
+        self.add(box)
+        box.pack_start(lbl(f"<b>Your browser opened claude.ai.</b>\nSign in as the account you want for "
+                           f"<b>{esc(name)}</b> and click <b>Authorize</b>. This window closes by itself "
+                           "when the login finishes.", markup=True, wrap=True), False, False, 0)
+        box.pack_start(lbl('<small>Browser already signed in as another account? Sign out there first, or '
+                           'copy the link and open it in a private window (Ctrl+Shift+N or Ctrl+Shift+P).</small>',
+                           markup=True, wrap=True), False, False, 0)
+        copy = Gtk.Button(label="Copy link")
+        copy.connect("clicked", self.copy_link)
+        again = Gtk.Button(label="Open browser again")
+        again.connect("clicked", lambda *_: self.link() and subprocess.Popen(["xdg-open", self.link()]))
+        box.pack_start(hbox(copy, again, spacing=6), False, False, 0)
+
+        exp = Gtk.Expander(label="The browser showed a code instead?")
+        cbox = vbox(spacing=6)
+        cbox.set_margin_top(6)
+        self.entry = Gtk.Entry(visibility=False, placeholder_text="paste the code here (Ctrl+V)")
+        self.entry.set_invisible_char("*")
+        self.entry.connect("activate", self.submit)
+        cbox.pack_start(self.entry, False, False, 0)
+        crow = Gtk.Box(spacing=6)
+        show = Gtk.CheckButton(label="Show code")
+        show.connect("toggled", lambda b: self.entry.set_visibility(b.get_active()))
+        send = Gtk.Button(label="Log in with code")
+        send.connect("clicked", self.submit)
+        crow.pack_start(show, False, False, 0)
+        crow.pack_end(send, False, False, 0)
+        cbox.pack_start(crow, False, False, 0)
+        self.hint = lbl("", markup=True, wrap=True)
+        cbox.pack_start(self.hint, False, False, 0)
+        exp.add(cbox)
+        box.pack_start(exp, False, False, 0)
+
+        bottom = Gtk.Box(spacing=6)
+        self.status = lbl('<small><span alpha="65%">Waiting for the browser…</span></small>', markup=True)
+        cancel = Gtk.Button(label="Cancel login")
+        cancel.connect("clicked", lambda *_: self.cancel())
+        bottom.pack_start(self.status, True, True, 0)
+        bottom.pack_end(cancel, False, False, 0)
+        box.pack_start(bottom, False, False, 0)
+        self.show_all()
+
+    def reader(self):
+        for line in self.proc.stdout:
+            self.out.append(line)
+            self.states.update(re.findall(r"state=([A-Za-z0-9_-]+)", line))
+        rc = self.proc.wait()
+        GLib.idle_add(self.finished, rc)
+
+    def link(self):
+        try:
+            with open(self.url_file) as f:
+                return f.read().strip()
+        except OSError:
+            m = re.search(r"https://\S+?(?=\x1b|\s|$)", "".join(self.out))
+            return m.group(0) if m else None
+
+    def copy_link(self, *_):
+        url = self.link()
+        if url:
+            Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(url, -1)
+            self.status.set_markup("<small>Link copied. Paste it into a private window.</small>")
+        else:
+            self.status.set_markup(f'<small><span foreground="{AMBER}">No link yet, try again in a moment.</span></small>')
+
+    def submit(self, *_):
+        code = re.sub(r"\s+", "", self.entry.get_text())
+        half = len(code) // 2
+        if len(code) % 2 == 0 and code and code[:half] == code[half:]:
+            code = code[:half]  # pasted twice
+        if "#" not in code:
+            return self.say("That isn't a login code (it has no '#'). Copy it again from the browser.")
+        self.states.update(re.findall(r"state=([A-Za-z0-9_-]+)", self.link() or ""))
+        if self.states and code.split("#", 1)[1] not in self.states:
+            return self.say("That code is from a different login attempt (an older browser tab). "
+                            "Use the tab this login opened, or click Open browser again.")
+        try:
+            self.proc.stdin.write(code + "\n")
+            self.proc.stdin.flush()
+        except (OSError, ValueError):
+            return self.say("The login already ended.")
+        self.say("Checking the code…", ok=True)
+
+    def say(self, text, ok=False):
+        self.hint.set_markup(f'<small><span foreground="{BLUE if ok else AMBER}">{esc(text)}</span></small>')
+
+    def timeout(self):
+        if self.proc.poll() is None:
+            self.cancel("Login timed out.")
+        return False
+
+    def cancel(self, why="Login cancelled."):
+        self.cancelled = why
+        if self.proc.poll() is None:
+            self.proc.terminate()
+
+    def finished(self, rc):
+        self.destroy()
+        msg = self.cancelled
+        if rc != 0 and not msg:
+            last = [x.strip() for x in self.out if x.strip()]
+            msg = re.sub(r".*prompted > ", "", last[-1]) if last else "Login failed."
+        self.app.login_finished(self.name, rc == 0 and not self.cancelled, msg)
+        return False
+
+
+# ---------- panel icon ----------
+
+class PanelIcon:
+    """The panel icon, through whatever the panel speaks: XApp's status icon (Cinnamon, MATE, Xfce),
+    an AppIndicator (KDE, GNOME with the AppIndicator extension, ...) or GTK's tray icon (other X11
+    panels). XApp and GTK report clicks, so the dashboard toggles; an AppIndicator only shows a
+    menu, so that menu opens it (a middle click does too)."""
+
+    SIDES = {Gtk.PositionType.TOP: "top", Gtk.PositionType.BOTTOM: "bottom",
+             Gtk.PositionType.LEFT: "left", Gtk.PositionType.RIGHT: "right"}
+
+    def __init__(self, app):
+        self.app = app
+        desk = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+        if XApp and (any(d in desk for d in ("cinnamon", "mate", "xfce")) or not Indicator):
+            self.kind = "xapp"
+            self.icon = XApp.StatusIcon()
+            self.icon.set_name("claude-tray")
+            self.icon.connect("button-release-event", self.xapp_clicked)
+        elif Indicator:
+            self.kind = "indicator"
+            self.icon = Indicator.Indicator.new("claude-accounts", "claude-accounts",
+                                                Indicator.IndicatorCategory.APPLICATION_STATUS)
+            self.icon.set_status(Indicator.IndicatorStatus.ACTIVE)
+            self.icon.set_title("Claude Accounts")
+            menu = Gtk.Menu()
+            for text, cb in (("Open Claude Accounts", lambda: app.dash.popup()), ("Refresh now", app.refresh_now),
+                             (None, None), ("Quit", app.quit)):
+                it = Gtk.SeparatorMenuItem() if text is None else Gtk.MenuItem(label=text)
+                if cb:
+                    it.connect("activate", lambda _it, cb=cb: cb())
+                menu.append(it)
+            menu.show_all()
+            self.icon.set_menu(menu)
+            self.icon.set_secondary_activate_target(menu.get_children()[0])
+            self.menu = menu  # the indicator keeps no reference of its own
+        else:
+            self.kind = "gtk"
+            self.icon = Gtk.StatusIcon()
+            self.icon.set_title("Claude Accounts")
+            self.icon.connect("activate", lambda *_: app.dash.toggle(self.gtk_anchor()))
+            self.icon.connect("popup-menu", lambda *_: app.dash.toggle(self.gtk_anchor()))
+
+    def xapp_clicked(self, icon, x, y, button, t, position):
+        if button in (Gdk.BUTTON_PRIMARY, Gdk.BUTTON_SECONDARY):
+            size = icon.get_icon_size() or 24
+            side = self.SIDES.get(position, "bottom")
+            self.app.dash.toggle((x + size // 2, y, side) if side in ("top", "bottom") else (x, y, side), t)
+
+    def gtk_anchor(self):
+        ok, _screen, area, _orient = self.icon.get_geometry()
+        if not ok:
+            return None
+        mon = Gdk.Display.get_default().get_monitor_at_point(area.x, area.y).get_geometry()
+        cx = area.x + area.width // 2
+        return (cx, area.y, "bottom") if area.y > mon.y + mon.height // 2 else (cx, area.y + area.height, "top")
+
+    def update(self, path, text, tip):
+        if self.kind == "xapp":
+            self.icon.set_icon_name(path)
+            self.icon.set_label(text)
+            self.icon.set_tooltip_text(tip)
+        elif self.kind == "indicator":
+            self.icon.set_icon_full(path, "Claude usage")
+            self.icon.set_label(text, "")
+        else:
+            self.icon.set_from_file(path)
+            self.icon.set_tooltip_text(tip)
+
+    def shows_text(self):
+        return self.kind != "gtk"
+
+
+def pointer_anchor():
+    _screen, x, y = Gdk.Display.get_default().get_default_seat().get_pointer().get_position()
+    mon = Gdk.Display.get_default().get_monitor_at_point(x, y).get_geometry()
+    return x, y, "bottom" if y > mon.y + mon.height // 2 else "top"
+
+
+# ---------- dashboard ----------
+
+class Dashboard(Gtk.Window):
+    """The window the panel icon opens. Pages slide in a Gtk.Stack: home, an account, settings,
+    plugins and skills. It is built from data the app gathered in the background, and rebuilt only
+    while it is open and only when what it shows changed. It closes when it loses focus or on Esc."""
+
+    GAP = 6       # between the panel and the window
+    MARGIN = 8    # kept free at the screen edges
+
+    def __init__(self, app):
+        super().__init__(title="Claude Accounts")
+        self.app = app
+        self.set_decorated(False)
+        self.set_skip_taskbar_hint(True)
+        self.set_skip_pager_hint(True)
+        self.set_keep_above(True)
+        self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
+        self.set_icon_name("claude-accounts")
+        screen = self.get_screen()
+        visual = screen.get_rgba_visual()
+        self.round = bool(visual and screen.is_composited())  # rounded corners need see-through ones
+        if self.round:
+            self.set_visual(visual)
+            self.set_app_paintable(True)
+        styled(self, "ct-window")
+        self.panel = styled(Gtk.Box(orientation=Gtk.Orientation.VERTICAL), "ct-panel", None if self.round else "ct-square")
+        self.stack = Gtk.Stack(vhomogeneous=False, transition_duration=160)
+        self.stack.connect("notify::transition-running", self.prune)
+        self.panel.pack_start(self.stack, True, True, 0)
+        self.add(self.panel)
+        self.page, self.sig, self.anchor, self.columns, self.hidden_at, self.count = ("home",), None, None, 1, 0, 0
+        self.connect("delete-event", lambda *_: self.hide() or True)
+        self.connect("focus-out-event", lambda *_: self.hide())
+        self.connect("key-press-event", self.key)
+        self.connect("hide", lambda *_: setattr(self, "hidden_at", time.time()))
+
+    # ----- showing -----
+
+    def toggle(self, anchor=None, t=0):
+        if self.get_visible():
+            return self.hide()
+        if time.time() - self.hidden_at < 0.4:
+            return  # the click on the icon took the focus away, which already closed it
+        self.popup(anchor, t)
+
+    def popup(self, anchor=None, t=0):
+        """Open on the home page next to the panel icon (or the pointer), sized to fit the screen:
+        one column, or two when one would need scrolling and the screen is wide enough."""
+        self.anchor = anchor or pointer_anchor()
+        wa = Gdk.Display.get_default().get_monitor_at_point(*self.anchor[:2]).get_workarea()
+        ctx = self.get_pango_context()
+        cw = ctx.get_metrics(ctx.get_font_description(), None).get_approximate_char_width() / Pango.SCALE
+        one = int(min(max(44 * cw, 380), wa.width - 2 * self.MARGIN))
+        self.page, self.columns = ("home",), 1
+        self.render(force=True)
+        maxh = wa.height - 2 * self.MARGIN
+        w = one
+        if self.height(one) > maxh and wa.width - 2 * self.MARGIN >= 2 * one:
+            self.columns, w = 2, 2 * one
+            self.render(force=True)
+        h = min(self.height(w), maxh)
+        for sc in self.scrollers():
+            sc.set_max_content_height(maxh)
+        self.set_size_request(w, h)
+        self.resize(w, h)
+        ax, ay, side = self.anchor
+        x = {"left": ax + self.GAP, "right": ax - w - self.GAP}.get(side, ax - w // 2)
+        y = {"bottom": ay - h - self.GAP, "top": ay + self.GAP}.get(side, ay)
+        self.move(max(wa.x + self.MARGIN, min(x, wa.x + wa.width - w - self.MARGIN)),
+                  max(wa.y + self.MARGIN, min(y, wa.y + wa.height - h - self.MARGIN)))
+        self.realize()
+        if not t and GdkX11 and isinstance(self.get_window(), GdkX11.X11Window):
+            # Not opened by a click (launched again, or from the indicator's menu): without a recent
+            # timestamp the window manager would not focus it, and it could not close on focus loss.
+            t = GdkX11.x11_get_server_time(self.get_window())
+        self.show()
+        self.present_with_time(t or Gtk.get_current_event_time())
+
+    def height(self, width):
+        self.panel.show_all()
+        return self.panel.get_preferred_height_for_width(width)[1]
+
+    def scrollers(self):
+        return [c.scroller for c in self.stack.get_children() if hasattr(c, "scroller")]
+
+    def key(self, _w, ev):
+        if ev.keyval == Gdk.KEY_Escape:
+            self.go(("home",), back=True) if self.page != ("home",) else self.hide()
+            return True
+        return False
+
+    def hide_for_dialog(self):
+        """Dialogs can't sit under a window that closes when it loses focus: close it first."""
+        self.hide()
+
+    # ----- pages -----
+
+    def go(self, page, back=False):
+        self.page = page
+        self.render(force=True, transition=Gtk.StackTransitionType.SLIDE_RIGHT if back else
+                    Gtk.StackTransitionType.SLIDE_LEFT)
+
+    def render(self, force=False, transition=Gtk.StackTransitionType.NONE):
+        """Show the current page; rebuild it only when what it shows changed (or a new page)."""
+        if not (force or self.get_visible()):
+            return
+        sig = self.app.signature(self.page, self.columns)
+        if sig == self.sig and not force:
+            return
+        self.sig = sig
+        old = self.stack.get_visible_child()
+        keep = old.scroller.get_vadjustment().get_value() if old is not None and old.page == self.page else 0
+        builder = {"home": self.home, "account": self.account, "settings": self.settings_page,
+                   "extras": self.extras}[self.page[0]]
+        content = builder(*self.page[1:])
+        if content is None:  # e.g. the account is gone
+            self.page = ("home",)
+            content = self.home()
+        head, body = content
+        sc = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True)
+        if old is not None and hasattr(old, "scroller"):
+            sc.set_max_content_height(old.scroller.get_max_content_height())
+        sc.add(styled(body, "ct-body"))
+        page = vbox(styled(head, "ct-head"), spacing=0)
+        page.pack_start(sc, True, True, 0)
+        page.scroller, page.page = sc, self.page
+        self.count += 1
+        self.stack.add_named(page, f"p{self.count}")
+        page.show_all()
+        self.stack.set_visible_child_full(f"p{self.count}", transition)
+        if keep:
+            GLib.idle_add(lambda: sc.get_vadjustment().set_value(keep) and False, priority=GLib.PRIORITY_LOW)
+        if transition == Gtk.StackTransitionType.NONE:
+            self.prune()
+
+    def prune(self, *_):
+        if not self.stack.get_transition_running():
+            for c in self.stack.get_children():
+                if c is not self.stack.get_visible_child():
+                    self.stack.remove(c)
+
+    def header(self, title, sub=None, back=True, tools=()):
+        h = Gtk.Box(spacing=6)
+        if back:
+            h.pack_start(tool("go-previous-symbolic", lambda: self.go(("home",), back=True), "Back (Esc)"), False, False, 0)
+        t = vbox(lbl(title, "ct-app"), spacing=1)
+        if sub:
+            t.pack_start(lbl(sub, "ct-small", "ct-dim"), False, False, 0)
+        h.pack_start(t, True, True, 0)
+        for t in tools:
+            h.pack_end(t, False, False, 0)
+        return h
+
+    # home: accounts, today, best account, running sessions, actions
+
+    def home(self):
+        a, s, now = self.app, self.app.snap, time.time()
+        names = s["names"]
+        head = self.header("Claude Accounts", f"{len(names)} account{'s' * (len(names) != 1)}", back=False, tools=(
+            tool("emblem-system-symbolic", lambda: self.go(("settings",)), "Settings"),
+            tool("view-refresh-symbolic", a.refresh_now, "Refresh now")))
+        left = vbox(*(self.account_card(n, now) for n in names))
+        right = vbox()
+        if a.login:
+            show, cancel = Gtk.Button(label="Show login window"), Gtk.Button(label="Cancel login")
+            show.connect("clicked", lambda *_: a.login and (self.hide(), a.login.present()))
+            cancel.connect("clicked", lambda *_: a.login and a.login.cancel())
+            right.pack_start(styled(vbox(lbl(f"Waiting for the browser login of {a.login.name}…", wrap=True),
+                                         hbox(show, cancel, spacing=6), spacing=8), "ct-banner", "ct-blue"),
+                             False, False, 0)
+        elif a.note:
+            right.pack_start(styled(lbl(a.note[0], wrap=True), "ct-banner", "ct-amber" if a.note[1] else "ct-green"),
+                             False, False, 0)
+        right.pack_start(self.today_card(), False, False, 0)
+        best = best_account(names, s["use"], a.ids, now)
+        if best:
+            right.pack_start(self.best_card(best, now), False, False, 0)
+        right.pack_start(self.running_card(), False, False, 0)
+        right.pack_start(card(
+            row("list-add-symbolic", "Add account…", a.add_account, "Log in to another Claude account"),
+            row("application-x-addon-symbolic", "Plugins and skills",
+                lambda: self.go(("extras",)), f"{len(s['plugins'])} plugins, {len(s['skills'])} skills, shared by all accounts"),
+            row("web-browser-symbolic", "Usage on claude.ai", lambda: a.xdg_open(USAGE_PAGE)),
+            row("system-shutdown-symbolic", "Quit", a.quit, tone="red"), spacing=2), False, False, 0)
+        if self.columns == 2:
+            body = Gtk.Box(spacing=12, homogeneous=True)
+            body.pack_start(left, True, True, 0)
+            body.pack_start(right, True, True, 0)
+        else:
+            body = vbox(left, right)
+        return head, body
+
+    def account_card(self, name, now):
+        a = self.app
+        u, ident = a.snap["use"].get(name), a.ids.get(name)
+        used = last_used(u)
+        dim = not u or now - u.get("updated", 0) > STALE
+        logged_out = ident is not None and "error" in ident
+        top = Gtk.Box(spacing=8)
+        top.pack_start(lbl(name, "ct-title"), False, False, 0)
+        if (ident or {}).get("plan"):
+            top.pack_start(pill(ident["plan"], plan_tone(ident["plan"])), False, False, 0)
+        if a.login and a.login.name == name:
+            top.pack_end(pill("Logging in…", "blue"), False, False, 0)
+        elif logged_out:
+            top.pack_end(pill("Not logged in", "amber"), False, False, 0)
+        elif used and now - used < 180:
+            top.pack_end(pill("Active now", "blue"), False, False, 0)
+        elif used:
+            top.pack_end(lbl(f"used {ago(used, now)}", "ct-small", "ct-dim"), False, False, 0)
+        head = vbox(top, spacing=2)
+        if ident and "email" in ident:
+            head.pack_start(lbl(a.email(ident["email"]), "ct-small", "ct-dim"), False, False, 0)
+        box = vbox(head, spacing=12)
+        meters = [Meter(c, w, n, now, dim) for c, k, n in (("5-HOUR", "session", SESSION_LEN), ("WEEKLY", "weekly", WEEK_LEN))
+                  if (w := window(u, k, now))]
+        for m in meters:
+            box.pack_start(m, False, False, 0)
+        if not meters and not logged_out:
+            box.pack_start(lbl("No usage yet: open it and send a message.", "ct-small", "ct-dim"), False, False, 0)
+        note = a.api_note(name, u, now)
+        if note:
+            box.pack_start(lbl(note, "ct-small", "ct-amber", wrap=True), False, False, 0)
+        return button(box, lambda: self.go(("account", name)), "ct-card", tip=f"Sessions and projects with {name}")
+
+    def today_card(self):
+        t = self.app.today
+        if not t:
+            return card(caption("TODAY"), lbl("Reading today's sessions…", "ct-small", "ct-dim"))
+        top = Gtk.Box(spacing=8)
+        top.pack_start(lbl("TODAY", "ct-caption"), True, True, 0)
+        cost = lbl(f"${t['cost']:.2f}", "ct-big", "ct-green", xalign=1)
+        cost.set_tooltip_text("What today's use would cost at API prices, all accounts")
+        top.pack_end(cost, False, False, 0)
+        stats = Gtk.Box(homogeneous=True, spacing=6)
+        for v, k in ((t["turns"], "prompts"), (active_text(t["active"]), "active"), (t["lines"], "lines written")):
+            stats.pack_start(vbox(lbl(v, "ct-pct", xalign=0.5), lbl(k, "ct-small", "ct-dim", xalign=0.5), spacing=2),
+                             True, True, 0)
+        c = card(top, stats, spacing=12)
+        models = sorted(t["replies"].items(), key=lambda kv: -kv[1])
+        if models:
+            line = Gtk.Box(spacing=14, halign=Gtk.Align.CENTER)
+            for k, v in models:
+                line.pack_start(hbox(dot(MODEL_TONES.get(k, "grey")), lbl(f"{k} {v}", "ct-small", "ct-dim"), spacing=6),
+                                False, False, 0)
+            line.set_tooltip_text("Replies per model")
+            c.pack_start(line, False, False, 0)
+        return c
+
+    def best_card(self, name, now):
+        a, s = self.app, self.app.snap
+        u = s["use"][name]
+        w5, w7 = window(u, "session", now), window(u, "weekly", now)
+        used = max(w5["pct"] if w5 else 0, w7["pct"] if w7 else 0)
+        top = Gtk.Box(spacing=10)
+        top.pack_start(dot(tone_for(used)), False, False, 0)
+        top.pack_start(lbl(name, "ct-pct"), False, False, 0)
+        top.pack_start(lbl(f"5h {w5['pct'] if w5 else 0}% · 7d {w7['pct'] if w7 else 0}%", "ct-small", "ct-dim"), True, True, 0)
+        top.pack_end(pill(f"{100 - used}% left", tone_for(used)), False, False, 0)
+        folders = s["folders"]
+        if folders:
+            go = row("media-playback-start-symbolic", "Continue the last session here",
+                     lambda: a.open(name, folders[0], ["--continue"]), f"in {short(folders[0])}", tone="green")
+        else:
+            go = row("folder-open-symbolic", "Open in a folder…", lambda: a.choose_folder(name), tone="green")
+        return card(caption("MOST ROOM LEFT"), top, go)
+
+    def running_card(self):
+        running = self.app.snap["running"]
+        c = card(caption("RUNNING NOW", None if running else "no sessions open"), spacing=8)
+        for x in running[:5]:
+            r = Gtk.Box(spacing=10)
+            r.pack_start(dot("green" if x["busy"] else "grey"), False, False, 0)
+            r.pack_start(lbl(x["name"] or os.path.basename(x["cwd"]) or "session", "ct-small"), True, True, 0)
+            r.pack_end(pill(x["account"], "blue"), False, False, 0)
+            r.set_tooltip_text(short(x["cwd"]) + (" (background)" if x["bg"] else "") +
+                               (" · working" if x["busy"] else " · idle"))
+            c.pack_start(r, False, False, 0)
+        if len(running) > 5:
+            c.pack_start(lbl(f"+ {len(running) - 5} more", "ct-caption", "ct-dim"), False, False, 0)
+        return c
+
+    # one account: open Claude with it, its projects and sessions, log in, remove
+
+    def account(self, name):
+        a, s, now = self.app, self.app.snap, time.time()
+        if name not in s["names"]:
+            return None
+        ident = a.ids.get(name) or {}
+        logged_in = "email" in ident
+        cmd = "claude" if name == "main" else f"claude-{name}"
+        tools = [pill(ident["plan"], plan_tone(ident["plan"]))] if ident.get("plan") else []
+        head = self.header(name, a.email(ident["email"]) if logged_in else ident.get("error"), tools=tools)
+
+        copy = Gtk.Button(label="Copy")
+        copy.connect("clicked", lambda b: (a.copy(cmd), b.set_label("Copied")))
+        cmd_row = Gtk.Box(spacing=8)
+        cmd_row.pack_start(styled(lbl(cmd), "ct-code"), False, False, 0)
+        cmd_row.pack_start(lbl("in any terminal", "ct-small", "ct-dim"), True, True, 0)
+        cmd_row.pack_end(copy, False, False, 0)
+
+        folders = s["folders"]
+        actions = card(caption("OPEN CLAUDE"), spacing=2)
+        if folders:
+            actions.pack_start(row("media-playback-start-symbolic", "Continue the last session",
+                                   lambda: a.open(name, folders[0], ["--continue"]), f"in {short(folders[0])}",
+                                   tone="green"), False, False, 0)
+        actions.pack_start(row("folder-open-symbolic", "New session in a folder…", lambda: a.choose_folder(name),
+                               "Pick any project folder"), False, False, 0)
+        actions.pack_start(row("user-home-symbolic", "New session in your home folder", lambda: a.open(name, HOME)),
+                           False, False, 0)
+        actions.pack_start(cmd_row, False, False, 6)
+
+        body = vbox(actions, self.places(name, now))
+        acct = card(caption("ACCOUNT"), spacing=2)
+        login = row("changes-prevent-symbolic", "Log in again…" if logged_in else "Log in…",
+                    lambda: a.start_login(name, ident.get("email", "")), "Opens your browser",
+                    None if logged_in else "amber")
+        login.set_sensitive(a.login is None)  # one browser login at a time
+        acct.pack_start(login, False, False, 0)
+        acct.pack_start(row("utilities-terminal-symbolic", "Log in in a terminal…",
+                            lambda: a.acc(["login", name], HOME)), False, False, 0)
+        if name != "main":
+            rm = row("user-trash-symbolic", "Remove account…", lambda: a.remove_account(name),
+                     f"Logs out and deletes {cmd}; shared history stays", "red")
+            rm.set_sensitive(a.login is None)
+            acct.pack_start(rm, False, False, 0)
+        body.pack_start(acct, False, False, 0)
+        return head, body
+
+    def places(self, name, now):
+        """Pinned sessions and projects, recent projects, recent sessions. Sessions are shared by all
+        accounts, so any of them continues here with this account."""
+        a, s = self.app, self.app.snap
+        pins = a.settings
+        running = {r["id"] for r in s["running"]}  # an open session can't be deleted
+        fresh = {x["id"]: x for x in s["sessions"]}
+        pinned_s = [fresh.get(x["id"], x) for x in pins["pinned_sessions"] if os.path.isdir(x.get("cwd", ""))]
+        pinned_p = [p for p in pins["pinned"] if os.path.isdir(p)]
+        box = card(spacing=2)
+
+        def line(icon_name, title, sub, cb, pin_key, item, on, delete=None):
+            r = Gtk.Box(spacing=2)
+            r.pack_start(row(icon_name, title, cb, sub), True, True, 0)
+            if delete:
+                r.pack_end(tool("user-trash-symbolic", delete, "Delete this session", "ct-dim"), False, False, 0)
+            r.pack_end(tool("view-pin-symbolic" if Gtk.IconTheme.get_default().has_icon("view-pin-symbolic")
+                            else "starred-symbolic", lambda: a.toggle_pin(pin_key, item),
+                            "Unpin" if on else "Pin to the top", "ct-pin", *(("ct-on", "ct-amber") if on else ())),
+                       False, False, 0)
+            box.pack_start(r, False, False, 0)
+
+        def session(x, on):
+            line("chat-symbolic", x["title"], short(x["cwd"]) + (f" · {ago(x['at'], now)}" if x.get("at") else ""),
+                 lambda: a.open(name, x["cwd"], ["--resume", x["id"]]), "pinned_sessions",
+                 {k: x[k] for k in ("id", "cwd", "title")}, on,
+                 None if x["id"] in running else lambda: a.delete_session(x))
+
+        def project(p, on):
+            line("folder-symbolic", os.path.basename(p) or p, short(os.path.dirname(p)) or "/",
+                 lambda: a.open(name, p), "pinned", p, on)
+
+        if pinned_s or pinned_p:
+            box.pack_start(caption("PINNED"), False, False, 4)
+            for x in pinned_s:
+                session(x, True)
+            for p in pinned_p:
+                project(p, True)
+        projects = [f for f in s["folders"] if f != HOME and f not in pinned_p][:5]
+        if projects:
+            box.pack_start(caption("RECENT PROJECTS"), False, False, 4)
+            for p in projects:
+                project(p, False)
+        ids = {x["id"] for x in pinned_s}
+        sessions = [x for x in s["sessions"] if x["id"] not in ids]
+        if sessions:
+            box.pack_start(caption("RECENT SESSIONS", "resume with this account"), False, False, 4)
+            for x in sessions:
+                session(x, False)
+        if not box.get_children():
+            box.pack_start(lbl("No sessions yet.", "ct-small", "ct-dim"), False, False, 0)
+        return box
+
+    # settings
+
+    def settings_page(self):
+        a, st = self.app, self.app.settings
+        head = self.header("Settings")
+        panel = card(caption("PANEL SHOWS"), spacing=6)
+        group = None
+        for key, text in (("session", "5-hour %"), ("both", "5-hour and weekly %"), ("none", "Only the ring")):
+            r = Gtk.RadioButton.new_with_label_from_widget(group, text)
+            group = group or r
+            r.set_active(st["label"] == key)
+            r.connect("toggled", lambda b, k=key: b.get_active() and a.set_setting("label", k))
+            panel.pack_start(r, False, False, 0)
+        for key, text, sub in (("label_account", "Account name", "When you have more than one"),
+                               ("label_reset", "Time to the 5-hour reset", None),
+                               ("label_cost", "Today's cost", "At API prices, all accounts")):
+            panel.pack_start(self.switch(text, sub, st[key], lambda v, k=key: a.set_setting(k, v)), False, False, 0)
+        if not a.icon.shows_text():
+            panel.pack_start(lbl("This panel shows icons only, so only the ring is shown.", "ct-small", "ct-amber",
+                                 wrap=True), False, False, 0)
+        general = card(caption("GENERAL"), spacing=6)
+        for key, text, sub in (("alerts", "Usage alerts", "At 80% and 95%, and when a full limit resets"),
+                               ("api", "Check usage when idle", "Asks Anthropic's usage API every 5 minutes "
+                                       "while Claude Code isn't reporting"),
+                               ("hide_emails", "Hide email addresses", "Shows dev*@*.com instead")):
+            general.pack_start(self.switch(text, sub, st[key], lambda v, k=key: a.set_setting(k, v)), False, False, 0)
+        general.pack_start(self.switch("Start at login", "Puts the icon in the panel when you log in",
+                                       os.path.exists(AUTOSTART), a.set_autostart), False, False, 0)
+        about = card(caption("ABOUT"), spacing=4)
+        about.pack_start(lbl(f"claude-accounts {VERSION}", "ct-small"), False, False, 0)
+        about.pack_start(row("text-html-symbolic", "Project page", lambda: a.xdg_open(REPO), REPO.split("//")[1]),
+                         False, False, 0)
+        about.pack_start(row("text-x-generic-symbolic", "Show the log", lambda: a.xdg_open(os.path.join(CACHE, "tray.log")),
+                             short(os.path.join(CACHE, "tray.log"))), False, False, 0)
+        return head, vbox(panel, general, about)
+
+    def switch(self, title, sub, on, cb):
+        sw = Gtk.Switch(active=bool(on), valign=Gtk.Align.CENTER)
+        sw.connect("notify::active", lambda w, _p: cb(w.get_active()))
+        r = Gtk.Box(spacing=12)
+        r.pack_start(two_lines(title, sub), True, True, 0)
+        r.pack_end(sw, False, False, 0)
+        return r
+
+    # plugins and skills
+
+    def extras(self):
+        s, a = self.app.snap, self.app
+        head = self.header("Plugins and skills", "Shared by every account")
+        plugins = card(caption("PLUGINS", f"{sum(x['on'] for x in s['plugins'])} on"), spacing=2)
+        for x in s["plugins"]:
+            r = row("application-x-addon-symbolic", x["name"], lambda p=x["path"]: a.xdg_open(p),
+                    " · ".join(t for t in (x["from"], x["version"]) if t))
+            r.get_child().pack_end(pill("on" if x["on"] else "off", "green" if x["on"] else "grey"), False, False, 0)
+            plugins.pack_start(r, False, False, 0)
+        if not s["plugins"]:
+            plugins.pack_start(lbl("None installed. In Claude Code: /plugin", "ct-small", "ct-dim"), False, False, 0)
+        skills = card(caption("YOUR SKILLS"), spacing=2)
+        for x in s["skills"]:
+            skills.pack_start(row("starred-symbolic", x["name"], lambda p=x["path"]: a.xdg_open(p),
+                                  x["about"] or short(x["path"])), False, False, 0)
+        if not s["skills"]:
+            skills.pack_start(lbl("None yet. Add a folder with a SKILL.md to ~/.claude/skills.", "ct-small", "ct-dim",
+                                  wrap=True), False, False, 0)
+        return head, vbox(plugins, skills)
+
+
+# ---------- app ----------
+
+class App(Gtk.Application):
+    def __init__(self, show):
+        super().__init__(application_id=APP_ID)
+        self.show_at_start = show
+        self.settings = load_settings()
+        self.snap = {"names": accounts(), "use": {}, "folders": [], "sessions": [], "running": [],
+                     "plugins": [], "skills": []}
+        self.snapping = False
+        self.ids, self.ids_for, self.ids_time, self.fetching_ids = {}, (), 0, False
+        self.api = {}            # account -> {'blocked', 'strikes', 'error', 'busy', 'last'}
+        self.stats, self.today, self.stats_busy, self.stats_time = Stats(), None, False, 0
+        self.note = None         # (text, bad) after add / login / remove
+        self.login = None        # LoginWindow while a login runs
+        self.icon = self.dash = None
+        self.alerts = Alerts()
+
+    def do_activate(self):
+        if self.dash:  # launched again: show the dashboard of the running tray
+            return self.dash.popup()
+        self.hold()
+        install_css()
+        self.dash = Dashboard(self)
+        self.icon = PanelIcon(self)
+        self.update_icon()
+        self.tick()
+        GLib.timeout_add_seconds(15, self.tick)
+        if self.show_at_start:
+            GLib.timeout_add(400, lambda: self.dash.popup() and False)
+
+    # ----- data, gathered off the UI thread; results come back through GLib.idle_add -----
+
+    def background(self, work, done):
+        threading.Thread(target=lambda: GLib.idle_add(done, work()), daemon=True).start()
+
+    def tick(self):
+        if not self.snapping:
+            self.snapping = True
+            self.background(snapshot, self.got_snapshot)
+        return True
+
+    def got_snapshot(self, snap):
+        self.snapping = False
+        self.snap = snap
+        now = time.time()
+        names = snap["names"]
+        if (tuple(names) != self.ids_for or now - self.ids_time > 1800) and not self.fetching_ids:
+            self.fetch_identities(names)
+        if now - self.stats_time >= 60 and not self.stats_busy:
+            self.refresh_stats()
+        if self.settings["api"]:
+            for n in names:
+                self.maybe_fetch_api(n, now)
+        if self.settings["alerts"]:
+            self.alerts.check(names, snap["use"], now)
+        if self.dash.sig is None:  # build the home page once while hidden: loads the icons, so the first click is quick
+            self.dash.render(force=True)
+        self.changed()
+
+    def changed(self):
+        self.update_icon()
+        self.dash.render()
+
+    def fetch_identities(self, names=None):
+        names = names or self.snap["names"]
+        self.fetching_ids = True
+
+        def done(ids):
+            self.fetching_ids = False
+            self.ids, self.ids_for, self.ids_time = ids, tuple(names), time.time()
+            self.changed()
+        self.background(lambda: {n: identity(n) for n in names}, done)
+
+    def refresh_stats(self):
+        self.stats_busy, self.stats_time = True, time.time()
+
+        def done(s):
+            self.stats_busy, self.today = False, s
+            self.changed()
+        self.background(self.stats.update, done)
+
+    def maybe_fetch_api(self, name, now, force=False):
+        a = self.api.setdefault(name, {"blocked": 0, "strikes": 0, "error": None, "busy": False, "last": 0})
+        u = self.snap["use"].get(name) or {}
+        if a["busy"] or now < a["blocked"] or "error" in self.ids.get(name, {}):
+            return
+        if not force and (now - u.get("updated", 0) < API_EVERY or now - a["last"] < API_EVERY):
+            return
+        a["busy"], a["last"] = True, now
+
+        def work():
+            feed, err, code, retry = fetch_api(name)
+            if code == 401:  # let the official CLI refresh the token, then try once more
+                identity(name)
+                feed, err, code, retry = fetch_api(name)
+            if feed:
+                save_api_feed(name, feed)
+            return feed, err, code, retry, usage(name)
+
+        def done(res):
+            feed, err, code, retry, fresh = res
+            a["busy"] = False
+            if feed:
+                a["strikes"], a["error"] = 0, None
+                self.snap["use"][name] = fresh
+            else:
+                a["error"] = err
+                if code == 429:
+                    a["strikes"] += 1
+                    a["blocked"] = time.time() + (retry or min(BACKOFF * 2 ** (a["strikes"] - 1), 3600))
+            self.changed()
+        self.background(work, done)
+
+    def api_note(self, name, u, now):
+        a = self.api.get(name, {})
+        if a.get("blocked", 0) > now:
+            return f"Usage API paused until {clock(a['blocked'])} (rate-limited)"
+        if a.get("error") and a["error"] != "no login token" and (not u or now - u.get("updated", 0) > STALE):
+            return f"Usage API: {a['error']}"
+        return None
+
+    def signature(self, page, columns):
+        """What a page shows; the page is rebuilt only when this changes. Times are in minutes."""
+        s = self.snap
+        now = time.time()
+        return json.dumps([page, columns, s["names"], s["use"], s["folders"], s["sessions"], s["plugins"], s["skills"],
+                           [(x["account"], x["name"], x["cwd"], x["busy"], x["id"]) for x in s["running"]],
+                           self.ids, self.today, self.note, self.login and self.login.name, self.settings,
+                           {n: self.api_note(n, s["use"].get(n), now) for n in s["names"]}, int(now // 60)],
+                          sort_keys=True, default=str)
+
+    # ----- panel -----
+
+    def update_icon(self):
+        now = time.time()
+        names, use = self.snap["names"], self.snap["use"]
+        shown = max(names, key=lambda n: (last_used(use.get(n)), n == "main"))  # the account in use
+        u = use.get(shown)
+        s, w = window(u, "session", now), window(u, "weekly", now)
+        dim = not u or now - u.get("updated", 0) > STALE
+        st, parts = self.settings, []
+        if st["label_account"] and len(names) > 1:
+            parts.append(shown)
+        if s and st["label"] in ("session", "both"):
+            parts.append(f"{s['pct']}%" + (f" · {w['pct']}%" if w and st["label"] == "both" else ""))
+        if st["label_reset"] and s and s["resets"]:
+            parts.append(f"↻{dur(s['resets'] - now)}")
+        if st["label_cost"] and self.today:
+            parts.append(f"${self.today['cost']:.2f}")
+        tip = ["Claude"] + [f"{n}: " + (f"5h {a['pct']}% · 7d {b['pct']}%"
+                                        if (a := window(use.get(n), "session", now)) and (b := window(use.get(n), "weekly", now))
+                                        else "no usage yet") for n in names]
+        self.icon.update(icon_path(s and s["pct"], dim), "  ".join(parts), "\n".join(tip))
+
+    # ----- actions -----
+
+    def set_setting(self, key, value):
+        self.settings[key] = value
+        save_settings(self.settings)
+        if key == "api" and value:
+            for n in self.snap["names"]:
+                self.maybe_fetch_api(n, time.time())
+        GLib.idle_add(self.changed)
+
+    def set_autostart(self, on):
+        try:
+            set_autostart(on, os.path.realpath(__file__))
+        except OSError as e:
+            self.error(f"Could not change the autostart entry: {e}")
+
+    def toggle_pin(self, key, item):
+        def ident(p):
+            return p["id"] if isinstance(p, dict) else p
+        pins = self.settings[key]
+        on = not any(ident(p) == ident(item) for p in pins)
+        self.set_setting(key, [p for p in pins if ident(p) != ident(item)] + ([item] if on else []))
+
+    def email(self, e):
+        return mask_email(e) if self.settings["hide_emails"] else e
+
+    def refresh_now(self):
+        self.ids_time = 0  # identities are fetched again with the snapshot
+        self.stats_time = 0
+        if self.settings["api"]:
+            now = time.time()
+            for n in self.snap["names"]:
+                u = self.snap["use"].get(n) or {}
+                if now - u.get("updated", 0) >= 60:  # Claude Code's own numbers are fresher; keep them
+                    self.maybe_fetch_api(n, now, force=True)
+        self.tick()
+
+    def copy(self, text):
+        Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(text, -1)
+
+    def xdg_open(self, target):
+        self.dash.hide()
+        try:
+            subprocess.Popen(["xdg-open", target], start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as e:
+            self.error(f"Could not open {target}: {e}")
+
+    def open(self, name, cwd, args=()):
+        self.acc(["run", name, *args], cwd, hold=False)
+
+    def acc(self, args, cwd, hold=True):
+        self.dash.hide()
+        exe = claude_acc()
+        if not exe:
+            return self.error("claude-acc was not found in ~/.local/bin. Run the installer again.")
+        err = run_in_terminal(cwd, [exe, *args], hold=hold)
+        if err:
+            self.error(err)
+
+    def choose_folder(self, name):
+        self.dash.hide_for_dialog()
+        d = Gtk.FileChooserDialog(title=f"Open Claude ({name}) in…", action=Gtk.FileChooserAction.SELECT_FOLDER)
+        d.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Open", Gtk.ResponseType.OK)
+        d.set_current_folder(HOME)
+        d.set_keep_above(True)
+        if d.run() == Gtk.ResponseType.OK and d.get_filename():
+            self.open(name, d.get_filename())
+        d.destroy()
+
+    def start_login(self, name, email=""):
+        self.dash.hide_for_dialog()
+        if self.login:
+            return self.login.present()
+        self.note = None
+        self.login = LoginWindow(self, name, email)
+        self.changed()
+
+    def login_finished(self, name, ok, msg):
+        self.login = None
+        if not ok:
+            self.note = (f"{name}: {msg}", True)
+            return self.changed()
+
+        def done(ids):
+            self.ids, self.ids_for, self.ids_time = ids, tuple(ids), time.time()
+            me = ids.get(name, {})
+            twin = next((n for n, i in ids.items() if n != name and i.get("email") and i.get("email") == me.get("email")), None)
+            if "error" in me:
+                self.note = (f"{name} is still not logged in.", True)
+            elif twin:
+                self.note = (f"{name} is the same account as {twin}. Log in again with a different one.", True)
+            else:
+                self.note = (f"{name} logged in as {self.email(me['email'])}.", False)
+            notify("Claude", self.note[0])
+            self.changed()
+        self.background(lambda: {n: identity(n) for n in accounts()}, done)
+
+    def add_account(self):
+        self.dash.hide_for_dialog()
+        d = Gtk.Dialog(title="Add Claude account")
+        d.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Continue", Gtk.ResponseType.OK)
+        d.set_default_response(Gtk.ResponseType.OK)
+        d.set_keep_above(True)
+        box = d.get_content_area()
+        box.set_spacing(8)
+        box.set_border_width(12)
+        intro = lbl("Pick a short name. You'll get a command <b>claude-&lt;name&gt;</b> that shares your history, "
+                    "sessions, settings, plugins and skills. Your browser opens next so you can sign in.",
+                    markup=True, wrap=True)
+        intro.set_max_width_chars(50)
+        box.add(intro)
+        name_e = Gtk.Entry(activates_default=True, placeholder_text="name, e.g. work")
+        mail_e = Gtk.Entry(activates_default=True, placeholder_text="email (optional, pre-fills the login page)")
+        box.add(name_e)
+        box.add(mail_e)
+        d.show_all()
+        while d.run() == Gtk.ResponseType.OK:
+            name, email = name_e.get_text().strip().lower(), mail_e.get_text().strip()
+            if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,19}", name) and name not in ("main", "acc") and name not in accounts():
+                d.destroy()
+                return self.create_account(name, email)
+            name_e.grab_focus()
+            self.error(f"'{name}' can't be used: it must be new, 1–20 lowercase letters, digits or -, "
+                       "and not 'main' or 'acc'.")
+        d.destroy()
+
+    def create_account(self, name, email):
+        exe = claude_acc()
+        if not exe:
+            return self.error("claude-acc was not found in ~/.local/bin. Run the installer again.")
+        r = subprocess.run([exe, "add", name, "--no-login"], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=60)
+        if r.returncode != 0:
+            return self.error((r.stderr or r.stdout).strip() or "claude-acc add failed")
+        self.start_login(name, email)
+        self.tick()
+
+    def delete_session(self, x):
+        self.dash.hide_for_dialog()
+        if not self.confirm(f"Delete the session “{x['title']}”?",
+                            "Its conversation moves to the trash, for all accounts.", "Delete"):
+            return
+        try:
+            for path in transcripts(x["id"]):
+                for f in (path, path[:-len(".jsonl")]):  # the transcript, and its folder of side files
+                    if os.path.exists(f):
+                        Gio.File.new_for_path(f).trash(None)
+        except GLib.Error as e:
+            return self.error(f"Could not delete the session: {e.message}")
+        self.set_setting("pinned_sessions", [p for p in self.settings["pinned_sessions"] if p["id"] != x["id"]])
+        self.tick()
+
+    def remove_account(self, name):
+        self.dash.hide_for_dialog()
+        if not self.confirm(f"Remove account {name}?", f"This logs {name} out and deletes claude-{name}. "
+                            "Shared history and sessions are kept.", "Remove"):
+            return
+        exe = claude_acc()
+
+        def done(r):
+            self.note = (f"Removed {name}.", False) if r.returncode == 0 else (f"Could not remove {name}.", True)
+            self.ids.pop(name, None)
+            self.tick()
+        self.background(lambda: subprocess.run([exe, "rm", name, "--yes"], capture_output=True, text=True,
+                                               stdin=subprocess.DEVNULL), done)
+
+    def confirm(self, text, sub, verb):
+        d = Gtk.MessageDialog(message_type=Gtk.MessageType.WARNING, text=text, secondary_text=sub)
+        d.add_buttons("Cancel", Gtk.ResponseType.CANCEL, verb, Gtk.ResponseType.OK)
+        d.get_widget_for_response(Gtk.ResponseType.OK).get_style_context().add_class("destructive-action")
+        d.set_keep_above(True)
+        ok = d.run() == Gtk.ResponseType.OK
+        d.destroy()
+        return ok
+
+    def error(self, msg):
+        self.dash.hide_for_dialog()
+        d = Gtk.MessageDialog(message_type=Gtk.MessageType.ERROR, buttons=Gtk.ButtonsType.CLOSE, text=msg)
+        d.set_keep_above(True)
+        d.run()
+        d.destroy()
+
+
+def main():
+    show = "--background" not in sys.argv[1:]
+    if not sys.stderr.isatty():  # started from the menu or at login: keep errors and crashes
+        os.makedirs(CACHE, exist_ok=True)
+        sys.stderr = open(os.path.join(CACHE, "tray.log"), "a", buffering=1)
+        if not os.environ.get("CLAUDE_TRAY_CHILD"):
+            print(f"--- start {time.ctime()}", file=sys.stderr)
+    import faulthandler
+    faulthandler.enable(sys.stderr)
+    if os.environ.get("CLAUDE_TRAY_CHILD"):
+        return App(show).run([])
+    # If GTK ever crashes, start the tray again rather than leave the panel without its icon.
+    crashes = []
+    while True:
+        rc = subprocess.call([sys.executable, os.path.realpath(__file__), *sys.argv[1:]],
+                             env={**os.environ, "CLAUDE_TRAY_CHILD": "1"})
+        if -rc not in (signal.SIGSEGV, signal.SIGABRT, signal.SIGBUS):  # Quit, killed, already running
+            return rc
+        now = time.time()
+        crashes = [t for t in crashes if now - t < 600] + [now]
+        print(f"--- crashed (signal {-rc}); {'restarting' if len(crashes) <= 5 else 'giving up'}", file=sys.stderr)
+        if len(crashes) > 5:
+            return 1
+        time.sleep(2)
+        sys.argv[1:] = ["--background"]  # after a crash, come back quietly
+
+
+if __name__ == "__main__":
+    sys.exit(main())
