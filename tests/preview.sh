@@ -1,8 +1,9 @@
 #!/bin/bash
 # Render a status line script against every fixture at several widths and with NO_COLOR.
-# Usage: preview.sh [script] [fixture.json ...]
-script=${1:-$HOME/.claude/statusline.sh}; shift
-here=$(cd "$(dirname "$0")/.." && pwd)
+# Usage: tests/preview.sh [script] [fixture.json ...]   (default: this repo's status line)
+here=$(cd "$(dirname "$0")" && pwd)
+script=${1:-$here/../statusline/statusline.sh}; shift
+HOME=$(mktemp -d); trap 'rm -rf "$HOME"' EXIT; export HOME   # usage files go here, not in your real ~
 fixtures=("$@"); [ ${#fixtures[@]} -eq 0 ] && fixtures=("$here"/fixtures/*.json)
 for f in "${fixtures[@]}"; do
   echo "━━ ${f##*/}"
